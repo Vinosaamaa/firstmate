@@ -54,6 +54,7 @@ export const FIRSTMATE_SYNTHETIC_KINDS = [
   "away-supervisor",
   "from-firstmate",
   "launch-brief",
+  "resume-note",
   "legacy-operational",
 ] as const;
 

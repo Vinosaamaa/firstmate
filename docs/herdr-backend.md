@@ -263,6 +263,12 @@ A restored same-labeled tab with a missing pane or no registered agent is a husk
 Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
 This prevents closing the workspace's last tab before a replacement exists.
 
+An opt-in Codex conversation can resume after that server restart only when the common control record still matches the exact task id, canonical worktree, Codex harness, spawn generation, named session, workspace id, tab id, pane id, and `window=<session>:<pane-id>` endpoint.
+`relaunch --resume` uses those ids to address the restored recorded pane and launches `codex resume <exact-session-id>` there through the ordinary lifecycle transaction.
+Mutable labels and restart-husk discovery never select a conversation.
+The confirmed replacement publishes the same Herdr ids with a new `spawn_gen`; a launch whose post-submit outcome is uncertain refuses retry.
+`tests/fm-control-herdr-smoke.test.sh` proves this path in an isolated non-default named lab across a real server stop and restart.
+
 The generic Herdr agent-liveness probe reuses the same classifier.
 A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
@@ -335,6 +341,7 @@ tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
 tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
 tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
+tests/fm-control-herdr-smoke.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh

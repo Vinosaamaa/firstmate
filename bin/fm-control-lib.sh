@@ -34,13 +34,12 @@
 #      stopped. A verb whose postcondition cannot be proven on the recorded
 #      backend is refused rather than performed blind.
 #
-# `resume` is deliberately NOT a verb. It is not deterministic across the
-# verified adapters: codex and grok resume only from a session id printed at
-# exit, opencode resumes the most recent session for the cwd with --continue,
-# and claude, pi, pi-signed, and kimi have no verified pane-resume contract at
-# all. `relaunch` covers the same need deterministically for every adapter,
-# because the brief on disk - not a harness-private session - is the durable
-# instruction.
+# `resume` is deliberately NOT a verb. Ordinary relaunch stays disposable and
+# portable across adapters because the brief on disk is its durable
+# instruction. Exact Codex conversation continuity is an opt-in specialization
+# of the existing verbs (`exit --resumable`, `relaunch --resume`) whose state,
+# identity, and crash rules live in bin/fm-codex-session-lib.sh and
+# bin/fm-control.sh. No capability-table entry makes another harness resumable.
 
 # The complete control-plane verb allowlist, one per line.
 fm_control_verbs() {

@@ -65,6 +65,14 @@ Cursor is identified from its exact `cursor-agent` identity or versioned install
 The CI-enforced portable regression and opt-in real-harness drift guard follow the split owned by `.agents/skills/firstmate-coding-guidelines/SKILL.md`.
 Run the real-harness guard after any harness upgrade and before trusting refreshed evidence.
 
+### Exact Codex resume
+
+The shared control plane owns opt-in Codex conversation state; tmux contributes only exact endpoint capture, exit delivery, liveness, and replacement launch in the recorded pane.
+`exit --resumable` compares bounded captures immediately around `/quit`, and `relaunch --resume` types `codex resume <exact-session-id>` into that same task endpoint after the ordinary transaction proves it agent-free and still rooted at the canonical worktree.
+No tmux window label, current directory, terminal UUID scan, or most-recent session participates in session selection.
+See [`agent-control.md`](agent-control.md#exact-codex-session-lifecycle) for the backend-neutral record and crash rules.
+`tests/fm-control-relaunch.test.sh` pins the exact tmux command, same-endpoint rebinding, disposable switch behavior, pre-launch rollback, and uncertain post-launch refusal.
+
 ### Composer, busy state, and delivery
 
 Agent liveness and composer safety are separate checks.

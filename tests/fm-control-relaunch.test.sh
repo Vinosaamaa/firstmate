@@ -17,6 +17,9 @@
 #   6. fm-spawn --relaunch refuses on its own: a live agent, a contradicting
 #      flag, an extra positional, or a backend that cannot prove the previous
 #      agent exited.
+#   7. Exact Codex resume is opt-in, consumes only the exit banner captured for
+#      this task incarnation, and turns an uncertain post-launch failure into a
+#      non-retryable binding instead of guessing whether another resume is safe.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -25,6 +28,10 @@ set -u
 . "$ROOT/bin/fm-control-lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-trace-context-lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-wake-lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-codex-session-lib.sh"
 
 CONTROL="$ROOT/bin/fm-control.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
@@ -36,6 +43,7 @@ TMP_ROOT=$(fm_test_tmproot fm-control-relaunch)
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
 TASK_TMPS=()
+CODEX_SESSION_ID=01a02b1e-c95e-7a92-9e37-b0862d93e5e0
 
 relaunch_cleanup() {
   local d
@@ -73,7 +81,15 @@ case "${1:-}" in
       case "$payload" in
         /exit|/quit)
           printf 'zsh' > "$D/command"
+          if [ "$payload" = /quit ] && [ -f "$D/session-id" ]; then
+            printf 'To continue this session, run codex resume %s\n' \
+              "$(cat "$D/session-id")" >> "$D/pane"
+          fi
           [ -z "${FM_FAKE_EXIT_TRANSPORT_FAIL_AFTER_STOP:-}" ] || exit 1
+          ;;
+        *'codex resume '*)
+          printf 'codex' > "$D/command"
+          [ ! -e "$D/fail-resume-transport" ] || exit 1
           ;;
         *'encode launch-brief'*)
           cat "$D/becomes" > "$D/command"
@@ -109,7 +125,9 @@ case "${1:-}" in
       esac
     done
     printf 'fakepane\n'; exit 0 ;;
-  capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
+  capture-pane)
+    if [ -f "$D/pane" ]; then cat "$D/pane"; else printf '╭────╮\n│    │\n╰────╯\n'; fi
+    exit 0 ;;
   list-windows) [ -f "$D/windows" ] && cat "$D/windows"; exit 0 ;;
 esac
 exit 0
@@ -128,6 +146,7 @@ new_case() {
   mkdir -p "$dir/home/state" "$dir/home/data" "$dir/fake"
   : > "$dir/fake/literal"
   : > "$dir/fake/keys"
+  : > "$dir/fake/pane"
   printf 'claude' > "$dir/fake/command"
   printf 'claude' > "$dir/fake/becomes"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
@@ -273,6 +292,178 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
 }
 
+test_codex_exact_session_resume_and_ordinary_switch_retire_binding() {
+  local dir out rc old_gen new_gen side owner
+  dir=$(new_case codex-resume rl31)
+  add_ship_task "$dir" rl31 codex
+  printf 'spawn_gen=spawn-rl31-initial\n' >> "$dir/home/state/rl31.meta"
+  printf 'codex' > "$dir/fake/command"
+  printf '%s\n' "$CODEX_SESSION_ID" > "$dir/fake/session-id"
+  old_gen=$(meta_field "$dir" rl31 spawn_gen)
+
+  out=$(run_control "$dir" rl31 exit --resumable); rc=$?
+  expect_code 0 "$rc" "opt-in Codex exit should park its exact session"$'\n'"$out"
+  assert_contains "$out" "session=$CODEX_SESSION_ID" \
+    "the parked outcome should name the exact parsed session"
+  side="$dir/home/state/rl31.codex-session"
+  owner="$dir/home/state/codex-sessions/$CODEX_SESSION_ID.owner"
+  [ "$(grep '^state=' "$side")" = state=parked ] || fail "the exact task binding should be parked"
+  cmp -s "$side" "$owner" || fail "the task binding and global exact-session owner must be byte-identical"
+
+  out=$(run_control "$dir" rl31 relaunch --resume --note "continue exact session"); rc=$?
+  expect_code 0 "$rc" "exact Codex resume should succeed in the same endpoint"$'\n'"$out"
+  assert_contains "$out" "resumed rl31 session=$CODEX_SESSION_ID" \
+    "the result should name the exact resumed session"
+  assert_grep "codex resume" "$dir/fake/literal" \
+    "the launch should use Codex's exact resume subcommand"
+  assert_grep "$CODEX_SESSION_ID" "$dir/fake/literal" \
+    "the launch should address the exact session id"
+  assert_no_grep "--last" "$dir/fake/literal" \
+    "exact resume must never use most-recent inference"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "exact resume should not create a fresh disposable conversation"
+  [ "$(grep '^state=' "$side")" = state=live ] || fail "confirmed resume should publish a live binding"
+  new_gen=$(meta_field "$dir" rl31 spawn_gen)
+  [ -n "$new_gen" ] && [ "$new_gen" != "$old_gen" ] \
+    || fail "resume must rebind to the replacement spawn incarnation"
+  [ "$(grep '^spawn_gen=' "$side")" = "spawn_gen=$new_gen" ] \
+    || fail "the live session must bind to the new spawn generation"
+
+  printf 'claude' > "$dir/fake/becomes"
+  out=$(run_control "$dir" rl31 relaunch --harness claude --note "switch deliberately"); rc=$?
+  expect_code 0 "$rc" "ordinary harness switching should stay disposable"$'\n'"$out"
+  [ ! -e "$side" ] && [ ! -e "$owner" ] \
+    || fail "ordinary harness switching must retire an opt-in Codex binding"
+  assert_grep "encode launch-brief" "$dir/fake/literal" \
+    "ordinary harness switching should launch from the durable brief and note"
+  pass "fm-control relaunch: exact Codex resume is opt-in and ordinary harness switching retires it"
+}
+
+test_codex_resume_refuses_scout_and_non_codex_tasks() {
+  local dir out rc
+  dir=$(new_case codex-scout rl32)
+  add_ship_task "$dir" rl32 codex
+  printf 'spawn_gen=spawn-rl32-initial\n' >> "$dir/home/state/rl32.meta"
+  sed 's/^kind=ship$/kind=scout/' "$dir/home/state/rl32.meta" > "$dir/home/state/rl32.meta.tmp"
+  mv "$dir/home/state/rl32.meta.tmp" "$dir/home/state/rl32.meta"
+  printf 'codex' > "$dir/fake/command"
+  out=$(run_control "$dir" rl32 exit --resumable); rc=$?
+  expect_code 1 "$rc" "a Codex scout should keep disposable exit behavior"
+  assert_contains "$out" "only for Codex ship tasks" "the scout refusal should name the opt-in boundary"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused resumable scout exit must send no bytes"
+
+  dir=$(new_case noncodex-resume rl33)
+  add_ship_task "$dir" rl33 claude
+  printf 'claude' > "$dir/fake/command"
+  out=$(run_control "$dir" rl33 relaunch --resume --note x); rc=$?
+  expect_code 1 "$rc" "a non-Codex task cannot request exact Codex resume"
+  assert_contains "$out" "exact verified codex adapter" "the non-Codex refusal should name the supported scope"
+  [ -z "$(cat "$dir/fake/literal")" ] || fail "a refused non-Codex resume must send no bytes"
+  pass "fm-control relaunch: Scouts and non-Codex harnesses remain disposable"
+}
+
+test_codex_resume_prelaunch_failure_stays_parked() {
+  local dir out rc before_count after_count side
+  dir=$(new_case codex-resume-prelaunch rl34)
+  add_ship_task "$dir" rl34 codex
+  printf 'spawn_gen=spawn-rl34-initial\n' >> "$dir/home/state/rl34.meta"
+  printf 'codex' > "$dir/fake/command"
+  printf '%s\n' "$CODEX_SESSION_ID" > "$dir/fake/session-id"
+  run_control "$dir" rl34 exit --resumable >/dev/null \
+    || fail "prelaunch fixture should park the exact Codex session"
+  side="$dir/home/state/rl34.codex-session"
+  before_count=$(grep -c 'codex resume ' "$dir/fake/literal" || true)
+  printf '%s' "$dir/not-the-worktree" > "$dir/fake/cwd"
+  out=$(run_control "$dir" rl34 relaunch --resume --note "do not launch"); rc=$?
+  expect_code 1 "$rc" "a wrong endpoint cwd should refuse before exact resume launch"
+  after_count=$(grep -c 'codex resume ' "$dir/fake/literal" || true)
+  [ "$after_count" = "$before_count" ] || fail "a prelaunch refusal must send no exact resume command"
+  [ "$(grep '^state=' "$side")" = state=parked ] \
+    || fail "a prelaunch refusal must preserve the parked session binding"
+  pass "fm-control relaunch: prelaunch failure preserves the exact parked session"
+}
+
+test_codex_resume_postlaunch_uncertainty_refuses_retry() {
+  local dir out rc side count_before count_after
+  dir=$(new_case codex-resume-uncertain rl35)
+  add_ship_task "$dir" rl35 codex
+  printf 'spawn_gen=spawn-rl35-initial\n' >> "$dir/home/state/rl35.meta"
+  printf 'codex' > "$dir/fake/command"
+  printf '%s\n' "$CODEX_SESSION_ID" > "$dir/fake/session-id"
+  run_control "$dir" rl35 exit --resumable >/dev/null \
+    || fail "uncertain fixture should park the exact Codex session"
+  side="$dir/home/state/rl35.codex-session"
+  : > "$dir/fake/fail-resume-transport"
+  out=$(run_control "$dir" rl35 relaunch --resume --note "transport becomes uncertain"); rc=$?
+  expect_code 1 "$rc" "post-launch transport failure should not claim success"
+  assert_contains "$out" "speculative retry is refused" \
+    "the failure should expose the non-retryable uncertain state"
+  [ "$(grep '^state=' "$side")" = state=uncertain ] \
+    || fail "a failure after resume bytes may have launched must become uncertain"
+  count_before=$(grep -c "codex resume .*${CODEX_SESSION_ID}" "$dir/fake/literal" || true)
+  rm -f "$dir/fake/fail-resume-transport"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_control "$dir" rl35 relaunch --resume --note "must refuse retry"); rc=$?
+  expect_code 1 "$rc" "an uncertain exact session must refuse retry"
+  count_after=$(grep -c "codex resume .*${CODEX_SESSION_ID}" "$dir/fake/literal" || true)
+  [ "$count_after" = "$count_before" ] || fail "uncertain retry must send no second resume command"
+  assert_contains "$out" "uncertain exact Codex resume binding" \
+    "uncertain retry should name the durable refusal, not infer safety"
+  pass "fm-control relaunch: post-launch uncertainty is durable and non-retryable"
+}
+
+test_codex_resume_recovers_only_a_proven_prelaunch_crash() {
+  local dir out rc side attempt count
+  dir=$(new_case codex-resume-prepared-crash rl36)
+  add_ship_task "$dir" rl36 codex
+  printf 'spawn_gen=spawn-rl36-initial\n' >> "$dir/home/state/rl36.meta"
+  printf 'codex' > "$dir/fake/command"
+  printf '%s\n' "$CODEX_SESSION_ID" > "$dir/fake/session-id"
+  run_control "$dir" rl36 exit --resumable >/dev/null \
+    || fail "prepared-crash fixture should park the exact Codex session"
+  side="$dir/home/state/rl36.codex-session"
+  fm_codex_session_transition "$dir/home/state" rl36 "$dir/home/state/rl36.meta" parked resuming >/dev/null \
+    || fail "prepared-crash fixture should enter resuming"
+  attempt="$dir/home/state/rl36.control-relaunch.resume-attempt"
+  printf 'prepared\n' > "$attempt"
+
+  out=$(run_control "$dir" rl36 relaunch --resume --note "recover proven prelaunch crash"); rc=$?
+  expect_code 0 "$rc" "a dead endpoint with a merely prepared attempt is provably safe to recover"$'\n'"$out"
+  count=$(grep -c "codex resume .*${CODEX_SESSION_ID}" "$dir/fake/literal" || true)
+  [ "$count" = 1 ] || fail "prelaunch crash recovery should launch the exact session once (count=$count)"
+  [ "$(grep '^state=' "$side")" = state=live ] \
+    || fail "recovered exact resume should finish live"
+  [ ! -e "$attempt" ] || fail "confirmed resume should clear the attempt marker"
+  pass "fm-control relaunch: a proven prelaunch crash restores parked and resumes exactly once"
+}
+
+test_codex_resume_crash_after_launch_boundary_becomes_uncertain() {
+  local dir out rc side attempt count_before count_after
+  dir=$(new_case codex-resume-launching-crash rl37)
+  add_ship_task "$dir" rl37 codex
+  printf 'spawn_gen=spawn-rl37-initial\n' >> "$dir/home/state/rl37.meta"
+  printf 'codex' > "$dir/fake/command"
+  printf '%s\n' "$CODEX_SESSION_ID" > "$dir/fake/session-id"
+  run_control "$dir" rl37 exit --resumable >/dev/null \
+    || fail "launching-crash fixture should park the exact Codex session"
+  side="$dir/home/state/rl37.codex-session"
+  fm_codex_session_transition "$dir/home/state" rl37 "$dir/home/state/rl37.meta" parked resuming >/dev/null \
+    || fail "launching-crash fixture should enter resuming"
+  attempt="$dir/home/state/rl37.control-relaunch.resume-attempt"
+  printf 'launching\n' > "$attempt"
+  count_before=$(grep -c "codex resume .*${CODEX_SESSION_ID}" "$dir/fake/literal" || true)
+
+  out=$(run_control "$dir" rl37 relaunch --resume --note "must not speculate"); rc=$?
+  expect_code 1 "$rc" "a prior crash after the launch boundary must refuse speculative retry"
+  assert_contains "$out" "prior exact Codex resume launch" \
+    "the refusal should name the prior uncertain launch"
+  count_after=$(grep -c "codex resume .*${CODEX_SESSION_ID}" "$dir/fake/literal" || true)
+  [ "$count_after" = "$count_before" ] || fail "crash reconciliation must send no additional resume command"
+  [ "$(grep '^state=' "$side")" = state=uncertain ] \
+    || fail "a crash after launch may have started must persist uncertain"
+  pass "fm-control relaunch: a crash after the launch boundary is uncertain and non-retryable"
+}
+
 test_relaunch_preserves_durable_task_metadata() {
   local dir out rc
   dir=$(new_case durable-meta rl19)
@@ -314,7 +505,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
     FM_FAKE_TRACE_EXPORTED="$exported" \
     run_control "$dir" rl28 relaunch --note "continue after publication" > "$dir/control.out" &
   control_pid=$!
-  while [ ! -e "$prepare" ] && [ "$i" -lt 200 ]; do
+  while [ ! -e "$prepare" ] && [ "$i" -lt 400 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -332,7 +523,7 @@ test_relaunch_serializes_concurrent_durable_metadata_publication() {
       --carry-platform x --carry-max 280 > "$dir/link.out" 2>&1 &
   link_pid=$!
   i=0
-  while { [ ! -e "$ready" ] || [ ! -e "$exported" ]; } && [ "$i" -lt 200 ]; do
+  while { [ ! -e "$ready" ] || [ ! -e "$exported" ]; } && [ "$i" -lt 400 ]; do
     /bin/sleep 0.01
     i=$((i + 1))
   done
@@ -1313,6 +1504,12 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_codex_exact_session_resume_and_ordinary_switch_retire_binding
+test_codex_resume_refuses_scout_and_non_codex_tasks
+test_codex_resume_prelaunch_failure_stays_parked
+test_codex_resume_postlaunch_uncertainty_refuses_retry
+test_codex_resume_recovers_only_a_proven_prelaunch_crash
+test_codex_resume_crash_after_launch_boundary_becomes_uncertain
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
