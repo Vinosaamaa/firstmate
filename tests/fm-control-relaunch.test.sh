@@ -437,6 +437,38 @@ test_codex_resume_recovers_only_a_proven_prelaunch_crash() {
   pass "fm-control relaunch: a proven prelaunch crash restores parked and resumes exactly once"
 }
 
+test_codex_resume_recovers_prelaunch_crash_after_replacement_metadata() {
+  local dir out rc side attempt prior_meta current_meta count
+  dir=$(new_case codex-resume-published-prepared-crash rl38)
+  add_ship_task "$dir" rl38 codex
+  printf 'spawn_gen=spawn-rl38-initial\n' >> "$dir/home/state/rl38.meta"
+  printf 'codex' > "$dir/fake/command"
+  printf '%s\n' "$CODEX_SESSION_ID" > "$dir/fake/session-id"
+  run_control "$dir" rl38 exit --resumable >/dev/null \
+    || fail "published prepared-crash fixture should park the exact Codex session"
+  side="$dir/home/state/rl38.codex-session"
+  current_meta="$dir/home/state/rl38.meta"
+  prior_meta="$dir/home/state/rl38.control-relaunch.meta-prior"
+  fm_codex_session_transition "$dir/home/state" rl38 "$current_meta" parked resuming >/dev/null \
+    || fail "published prepared-crash fixture should enter resuming"
+  cp -p "$current_meta" "$prior_meta"
+  sed 's/^spawn_gen=.*/spawn_gen=spawn-rl38-replacement/' "$current_meta" > "$current_meta.tmp"
+  printf 'control_relaunch_tx=crashed-replacement\n' >> "$current_meta.tmp"
+  mv "$current_meta.tmp" "$current_meta"
+  attempt="$dir/home/state/rl38.control-relaunch.resume-attempt"
+  printf 'prepared\n' > "$attempt"
+
+  out=$(run_control "$dir" rl38 relaunch --resume --note "recover published prelaunch crash"); rc=$?
+  expect_code 0 "$rc" "a dead endpoint with prepared launch and published replacement metadata should recover"$'\n'"$out"
+  count=$(grep -c "codex resume .*${CODEX_SESSION_ID}" "$dir/fake/literal" || true)
+  [ "$count" = 1 ] \
+    || fail "published prelaunch crash recovery should launch the exact session once (count=$count)"
+  [ "$(grep '^state=' "$side")" = state=live ] \
+    || fail "published prelaunch crash recovery should finish live"
+  [ ! -e "$attempt" ] || fail "confirmed published prelaunch recovery should clear the attempt marker"
+  pass "fm-control relaunch: published replacement metadata is rolled back before safe prelaunch recovery"
+}
+
 test_codex_resume_crash_after_launch_boundary_becomes_uncertain() {
   local dir out rc side attempt count_before count_after
   dir=$(new_case codex-resume-launching-crash rl37)
@@ -1509,6 +1541,7 @@ test_codex_resume_refuses_scout_and_non_codex_tasks
 test_codex_resume_prelaunch_failure_stays_parked
 test_codex_resume_postlaunch_uncertainty_refuses_retry
 test_codex_resume_recovers_only_a_proven_prelaunch_crash
+test_codex_resume_recovers_prelaunch_crash_after_replacement_metadata
 test_codex_resume_crash_after_launch_boundary_becomes_uncertain
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication

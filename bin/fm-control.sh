@@ -902,6 +902,11 @@ codex_resume_reconcile_prior_attempt() {
   state=$(agent_state)
   case "$state:$attempt_phase" in
     dead:|dead:prepared)
+      if [ "$binding_meta" = "$META_PRIOR" ]; then
+        cp -p "$META_PRIOR" "$META" \
+          || die "task $ID has a safely recoverable pre-launch Codex resume, but its prior task record could not be restored"
+        binding_meta=$META
+      fi
       fm_codex_session_transition "$STATE" "$ID" "$binding_meta" resuming parked >/dev/null \
         || die "task $ID has a pre-launch Codex resume record that could not be restored to parked safely"
       rm -f "$attempt"
