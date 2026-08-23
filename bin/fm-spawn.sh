@@ -17,6 +17,7 @@
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
+#                    [--resume-codex-session <exact-uuid> --resume-note-file <path>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
 #   the launch half of the control plane (bin/fm-control.sh relaunch), which
@@ -182,6 +183,15 @@
 # success line and state/<id>.meta omit them.
 # Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
 # consumers can distinguish a replacement worker that reuses the same task id.
+# The two --resume-* flags are an internal fm-control transaction surface, not
+# a standalone recovery shortcut. They require --relaunch, a Codex ship task,
+# the parent's transaction token and attempt journal, and a valid resuming
+# state/<id>.codex-session binding. The launch is exactly `codex resume <UUID>`
+# with the progress note as its optional prompt; it never uses --last, a label,
+# or cwd-most-recent inference. The attempt journal is written `prepared`, then
+# `launching` before any launch bytes, then `submitted` after Enter so a caller
+# can distinguish a definite pre-launch failure from a crash window that must
+# remain uncertain.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
 # one W3C traceparent= carrier, the same value injected into the pane as
@@ -248,6 +258,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
+# shellcheck source=bin/fm-codex-session-lib.sh
+. "$SCRIPT_DIR/fm-codex-session-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
@@ -275,6 +287,8 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+RESUME_CODEX_SESSION=
+RESUME_NOTE_FILE=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -282,6 +296,8 @@ BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
 TRACEPARENT_SET=0
+RESUME_CODEX_SET=0
+RESUME_NOTE_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -298,6 +314,8 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      resume-codex-session) RESUME_CODEX_SESSION=$a; RESUME_CODEX_SET=1 ;;
+      resume-note-file) RESUME_NOTE_FILE=$a; RESUME_NOTE_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -321,6 +339,10 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --resume-codex-session) want_value=resume-codex-session ;;
+    --resume-codex-session=*) RESUME_CODEX_SESSION=${a#--resume-codex-session=}; RESUME_CODEX_SET=1 ;;
+    --resume-note-file) want_value=resume-note-file ;;
+    --resume-note-file=*) RESUME_NOTE_FILE=${a#--resume-note-file=}; RESUME_NOTE_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -332,6 +354,14 @@ done
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+[ "$RESUME_CODEX_SET" -eq 0 ] || fm_codex_session_uuid_valid "$RESUME_CODEX_SESSION" \
+  || { echo "error: --resume-codex-session requires a canonical lowercase UUID" >&2; exit 1; }
+[ "$RESUME_NOTE_SET" -eq 0 ] || [ -f "$RESUME_NOTE_FILE" ] \
+  || { echo "error: --resume-note-file must name a readable file" >&2; exit 1; }
+[ "$RESUME_CODEX_SET" -eq "$RESUME_NOTE_SET" ] \
+  || { echo "error: --resume-codex-session and --resume-note-file are required together" >&2; exit 1; }
+[ "$RESUME_CODEX_SET" -eq 0 ] || [ "$RELAUNCH" -eq 1 ] \
+  || { echo "error: exact Codex resume is available only inside --relaunch" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -672,6 +702,15 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+CODEX_RESUME_ATTEMPT=${FM_CONTROL_CODEX_RESUME_ATTEMPT:-}
+
+spawn_codex_resume_attempt_write() {  # <phase>
+  local phase=$1 tmp
+  [ -n "$CODEX_RESUME_ATTEMPT" ] || return 1
+  tmp="$CODEX_RESUME_ATTEMPT.tmp.${BASHPID:-$$}"
+  (umask 077; printf '%s\n' "$phase" > "$tmp") || return 1
+  mv -f "$tmp" "$CODEX_RESUME_ATTEMPT"
+}
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -1215,6 +1254,32 @@ case "$ARG3" in
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
+
+if [ "$RESUME_CODEX_SET" -eq 1 ]; then
+  [ "$HARNESS" = codex ] && [ "$KIND" = ship ] || {
+    echo "error: exact Codex resume requires a Codex ship task" >&2
+    exit 1
+  }
+  [ "$SPAWN_CONTROL_PARENT" = 1 ] && [ -n "${FM_CONTROL_RELAUNCH_TX:-}" ] || {
+    echo "error: exact Codex resume is control-owned and requires the active parent relaunch transaction" >&2
+    exit 1
+  }
+  [ "$CODEX_RESUME_ATTEMPT" = "$STATE/$ID.control-relaunch.resume-attempt" ] || {
+    echo "error: exact Codex resume attempt journal is not the task's canonical control path" >&2
+    exit 1
+  }
+  bound_session=$(fm_codex_session_validate "$STATE" "$ID" "$RELAUNCH_META" resuming 2>/dev/null || true)
+  [ "$bound_session" = "$RESUME_CODEX_SESSION" ] || {
+    echo "error: exact Codex resume binding does not match this task, endpoint, worktree, and spawn incarnation" >&2
+    exit 1
+  }
+  spawn_codex_resume_attempt_write prepared || {
+    echo "error: could not publish the exact Codex resume attempt checkpoint" >&2
+    exit 1
+  }
+  # shellcheck disable=SC2016 # substitutions run inside the task pane.
+  LAUNCH='codex resume __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" __CODEXSESSION__ "$(__OPINPUT__ encode resume-note < __RESUMENOTE__)"'
+fi
 
 # muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
 # instance, so it needs a primary supervision protocol; muse has none, and its
@@ -2712,6 +2777,8 @@ sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
+sq_codex_session=$(shell_quote "$RESUME_CODEX_SESSION")
+sq_resume_note=$(shell_quote "$RESUME_NOTE_FILE")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
@@ -2722,6 +2789,8 @@ LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
+LAUNCH=${LAUNCH//__CODEXSESSION__/$sq_codex_session}
+LAUNCH=${LAUNCH//__RESUMENOTE__/$sq_resume_note}
 case "$HARNESS" in
   pi|pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
@@ -2806,6 +2875,14 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
   fi
 fi
 sleep 0.3
+if [ "$RESUME_CODEX_SET" -eq 1 ]; then
+  # Publish before the first launch byte. A crash after this point is
+  # intentionally uncertain even if the transport call never returns.
+  spawn_codex_resume_attempt_write launching || {
+    echo "error: could not publish the pre-launch Codex resume checkpoint" >&2
+    exit 1
+  }
+fi
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
@@ -2813,6 +2890,12 @@ if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
   spawn_herdr_presentation_order_lock_release
 fi
 spawn_send_key "$T" Enter
+if [ "$RESUME_CODEX_SET" -eq 1 ]; then
+  spawn_codex_resume_attempt_write submitted || {
+    echo "error: exact Codex resume was submitted but its attempt journal could not be advanced" >&2
+    exit 1
+  }
+fi
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
     kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"

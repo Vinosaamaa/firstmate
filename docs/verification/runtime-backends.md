@@ -30,6 +30,42 @@ zsh
 A persistent parent shell waiting for a child remained reported as the parent process, while a shell that directly execed a simple command changed identity with the process itself.
 Pi and pi-signed 0.82.0 were reverified on 2026-07-27 through real isolated `fm-spawn.sh` launches.
 
+### Codex exact session resume
+
+The interactive exact-session contract was verified on 2026-08-22 with codex-cli 0.149.0-alpha.4.1 in a private disposable tmux session and disposable git directory.
+No Firstmate home, production application, browser, or persistent user worktree participated.
+
+```sh
+codex --version
+codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox '<first prompt>'
+# after the completed turn, submit /quit
+codex resume --no-alt-screen --dangerously-bypass-approvals-and-sandbox <exact-session-id> '<second prompt>'
+```
+
+The bounded post-exit output added exactly one line in this shape:
+
+```text
+To continue this session, run codex resume <canonical-lowercase-UUID>
+```
+
+The exact positional id resumed the first conversation, and the second turn correctly recalled its private marker.
+The verification did not use `--last`, a session label, current-directory recency, or a broad UUID scan.
+The session id itself is intentionally omitted from this reusable record.
+
+The executable credentialed regression independently parsed Codex's single structured `thread.started.thread_id` and resumed that exact id with `codex exec resume` in a disposable clone:
+
+```sh
+FM_CODEX_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-codex-resume-live-e2e.test.sh
+```
+
+Bounded observed output:
+
+```text
+ok - codex-cli 0.149.0-alpha.4.1 resumed exact structured session <session-id> in a disposable clone
+```
+
+Hermetic transaction tests separately pin that Firstmate launches the interactive spelling `codex resume <exact-session-id>` and never `--last`.
+
 ### Agent liveness name sources
 
 The earlier record that every harness is observed under its own `#{pane_current_command}` no longer holds and has been replaced by the per-harness evidence below.

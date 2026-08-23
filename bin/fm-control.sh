@@ -3,9 +3,10 @@
 # lifecycle verbs addressed to an exact task id.
 #
 # Usage: fm-control.sh <task-id> interrupt
-#        fm-control.sh <task-id> exit
+#        fm-control.sh <task-id> exit [--resumable]
 #        fm-control.sh <task-id> relaunch [--harness <name>] [--model <name>]
 #                                         [--effort <level>]
+#                                         [--resume]
 #                                         (--note <text> | --note-file <path>)
 #
 # Why this exists, and how it differs from fm-send.sh. bin/fm-send.sh is the
@@ -56,10 +57,13 @@
 # endpoint, or discarding work stays with bin/fm-teardown.sh, which owns the
 # landed-work test.
 #
-# `resume` is not a verb: it is not deterministic across the verified adapters
-# (bin/fm-control-lib.sh's header owns that reasoning). `relaunch` covers the
-# same need for every adapter because the brief on disk, not a harness-private
-# session, is the durable instruction.
+# Exact Codex conversation resume is an opt-in specialization of the existing
+# verbs, not another verb. `exit --resumable` captures the one exact session id
+# printed by Codex after /quit. `relaunch --resume` consumes only that task's
+# exact parked binding through the same transaction and endpoint/worktree
+# checks as ordinary relaunch. Both flags are Codex ship-task only. Ordinary
+# exit/relaunch, fresh spawn, scouts, secondmates, and every other harness keep
+# the disposable brief-plus-note behavior above.
 #
 # Targeting is EXACT: only a bare task id with a state/<id>.meta record in
 # THIS home is accepted, and the record must pass the shared endpoint-identity
@@ -89,6 +93,7 @@
 #   FM_CONTROL_EXIT_WAIT         alive->dead wait after the exit command (30)
 #   FM_CONTROL_LAUNCH_WAIT       dead->alive wait after a relaunch (90)
 #   FM_CONTROL_EXIT_RETRIES      Enter retries for the exit command (3)
+#   FM_CONTROL_CODEX_CAPTURE_LINES bounded before/after exit capture (400)
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -130,6 +135,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
+# shellcheck source=bin/fm-codex-session-lib.sh
+. "$SCRIPT_DIR/fm-codex-session-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
@@ -140,6 +147,7 @@ SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
 EXIT_WAIT=${FM_CONTROL_EXIT_WAIT:-30}
 LAUNCH_WAIT=${FM_CONTROL_LAUNCH_WAIT:-90}
 EXIT_RETRIES=${FM_CONTROL_EXIT_RETRIES:-3}
+CODEX_CAPTURE_LINES=${FM_CONTROL_CODEX_CAPTURE_LINES:-400}
 
 die() {  # <message>
   echo "error: $1" >&2
@@ -192,6 +200,8 @@ MODEL_SET=0
 EFFORT_SET=0
 NOTE=
 NOTE_SET=0
+RESUMABLE_EXIT=0
+RESUME_RELAUNCH=0
 want_value=
 for a in "$@"; do
   if [ -n "$want_value" ]; then
@@ -227,6 +237,8 @@ for a in "$@"; do
       NOTE=$(cat "${a#--note-file=}")
       NOTE_SET=1
       ;;
+    --resumable) RESUMABLE_EXIT=1 ;;
+    --resume) RESUME_RELAUNCH=1 ;;
     *) die "unexpected argument '$a'" ;;
   esac
 done
@@ -236,6 +248,12 @@ if [ "$VERB" != relaunch ]; then
   [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
     || die "--harness, --model, --effort, and --note apply to 'relaunch' only"
 fi
+[ "$RESUMABLE_EXIT" = 0 ] || [ "$VERB" = exit ] \
+  || die "--resumable applies to 'exit' only"
+[ "$RESUME_RELAUNCH" = 0 ] || [ "$VERB" = relaunch ] \
+  || die "--resume applies to 'relaunch' only"
+[ "$RESUMABLE_EXIT" = 0 ] || [ "$RESUME_RELAUNCH" = 0 ] \
+  || die "--resumable and --resume cannot be combined"
 [ "$HARNESS_SET" = 0 ] || [ -n "$NEW_HARNESS" ] || die "--harness requires a non-empty value"
 [ "$MODEL_SET" = 0 ] || [ -n "$NEW_MODEL" ] || die "--model requires a non-empty value"
 [ "$EFFORT_SET" = 0 ] || [ -n "$NEW_EFFORT" ] || die "--effort requires a non-empty value"
@@ -482,6 +500,55 @@ do_exit() {
   printf 'stopped'
 }
 
+codex_resume_supported_task() {
+  [ "$HARNESS" = codex ] \
+    || die "resumable lifecycle is available only for a task recorded on the exact verified codex adapter (task $ID records '${RECORDED_HARNESS:-none}')"
+  [ "$KIND" = ship ] \
+    || die "resumable lifecycle is available only for Codex ship tasks; $ID is kind=$KIND"
+  [ -n "$(fm_meta_get "$META" spawn_gen)" ] \
+    || die "task $ID has no recorded spawn_gen, so a Codex session cannot be bound to an exact agent incarnation"
+}
+
+# Capture only the bounded endpoint output immediately surrounding /quit.
+# The parser accepts one newly-added exact Codex banner and rejects a stale,
+# malformed, truncated, absent, or multiply-added candidate.
+do_resumable_codex_exit() {
+  local before after state result session status
+  codex_resume_supported_task
+  state=$(agent_state)
+  if [ "$state" = dead ]; then
+    session=$(fm_codex_session_validate "$STATE" "$ID" "$META" parked 2>/dev/null) \
+      || die "task $ID is already stopped but has no exact parked Codex session binding for this task, endpoint, worktree, and spawn incarnation"
+    printf 'already-parked session=%s' "$session"
+    return 0
+  fi
+  [ "$state" = alive ] \
+    || die "task $ID's endpoint reads '$state'; refusing to capture a Codex session from an unattributed endpoint"
+  before="$STATE/.$ID.codex-exit-before.${BASHPID:-$$}"
+  after="$STATE/.$ID.codex-exit-after.${BASHPID:-$$}"
+  rm -f "$before" "$after"
+  if ! fm_backend_capture "$BACKEND" "$T" "$CODEX_CAPTURE_LINES" "$LABEL" > "$before"; then
+    rm -f "$before" "$after"
+    die "task $ID's bounded pre-exit Codex capture could not be read; the agent was left running"
+  fi
+  result=$(do_exit)
+  if ! fm_backend_capture "$BACKEND" "$T" "$CODEX_CAPTURE_LINES" "$LABEL" > "$after"; then
+    rm -f "$before" "$after"
+    die "task $ID stopped, but its bounded post-exit Codex capture could not be read; no resumable binding was published"
+  fi
+  if session=$(fm_codex_session_parse_new_banner "$before" "$after"); then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f "$before" "$after"
+  [ "$status" -eq 0 ] && fm_codex_session_uuid_valid "$session" \
+    || die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  fm_codex_session_publish "$STATE" "$ID" "$META" "$session" parked \
+    || die "task $ID stopped, but its exact Codex session $session could not be claimed without conflicting with another task or binding; no resumable binding was published"
+  printf '%s session=%s' "$result" "$session"
+}
+
 # --- transactional relaunch -------------------------------------------------
 #
 # The transaction's durable record is state/<id>.control-relaunch, with the
@@ -499,6 +566,9 @@ RELAUNCH_META_PUBLISHED=0
 RELAUNCH_AGENT_CONFIRMED=0
 RELAUNCH_TX=
 RELAUNCH_BRIEF=
+RELAUNCH_RESUME_SESSION=
+RELAUNCH_RESUME_ATTEMPT=
+RELAUNCH_RESUME_LAUNCH_UNCERTAIN=0
 PRIOR_HARNESS=$HARNESS
 PRIOR_RECORDED_HARNESS=$RECORDED_HARNESS
 CONFIG_HARNESS=
@@ -540,10 +610,52 @@ journal_write() {  # <phase> [extra-line]...
 }
 
 relaunch_rollback() {
-  local state
+  local state binding
   [ "$RELAUNCH_ACTIVE" = 1 ] || return 0
   [ "$RELAUNCH_PHASE" != complete ] || return 0
   RELAUNCH_ACTIVE=0
+  if [ "$RESUME_RELAUNCH" = 1 ]; then
+    case "$RELAUNCH_PHASE" in
+      checkpoint|noted)
+        if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
+          cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
+        fi
+        journal_write "failed:$RELAUNCH_PHASE" "rollback=resume-prelaunch" || true
+        echo "error: resumable relaunch of $ID failed before an exact resume launch was prepared; its prior instructions and binding were preserved" >&2
+        return 0
+        ;;
+      stopping)
+        if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
+          cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
+        fi
+        state=$(agent_state 2>/dev/null || printf unknown)
+        binding=$(fm_codex_session_validate "$STATE" "$ID" "$META" parked 2>/dev/null || true)
+        if [ -n "$binding" ]; then
+          journal_write "failed:$RELAUNCH_PHASE" "rollback=resume-parked-agent-state-$state" || true
+          echo "error: resumable relaunch of $ID failed while stopping or capturing the old agent; no exact resume launch was attempted, agent-state=$state, and exact session $binding remains parked" >&2
+        else
+          journal_write "failed:$RELAUNCH_PHASE" "rollback=resume-none-agent-state-$state" || true
+          echo "error: resumable relaunch of $ID failed while stopping or capturing the old agent; no exact resume launch was attempted, agent-state=$state, and no valid parked binding was published" >&2
+        fi
+        return 0
+        ;;
+      exited)
+        journal_write "failed:$RELAUNCH_PHASE" "rollback=resume-parked" || true
+        echo "error: $ID's Codex session was parked, but relaunch did not reach replacement launch; the exact binding remains parked" >&2
+        return 0
+        ;;
+      launching)
+        if [ "$RELAUNCH_RESUME_LAUNCH_UNCERTAIN" = 1 ]; then
+          journal_write "failed:$RELAUNCH_PHASE" "rollback=none-resume-uncertain" || true
+          echo "error: exact Codex resume launch for $ID may have started but was not confirmed; the binding is uncertain and speculative retry is refused" >&2
+        else
+          journal_write "failed:$RELAUNCH_PHASE" "rollback=resume-parked-before-launch" || true
+          echo "error: exact Codex resume launch for $ID failed before launch bytes were sent; the parked binding was preserved" >&2
+        fi
+        return 0
+        ;;
+    esac
+  fi
   case "$RELAUNCH_PHASE" in
     checkpoint|noted)
       # The old agent was never touched. Restore the instructions byte-exact so
@@ -765,12 +877,61 @@ record_note() {
   esac
 }
 
+# Reconcile a prior process crash at the exact-session launch boundary before
+# starting a new lifecycle transaction. Only a dead endpoint with an absent or
+# merely prepared attempt is provably pre-launch and may return to parked. Once
+# launch bytes may have been sent, or the endpoint is not positively dead, the
+# binding becomes uncertain and no caller may speculate by launching it again.
+codex_resume_reconcile_prior_attempt() {
+  local session= binding_meta= attempt="$JOURNAL.resume-attempt" attempt_phase state
+  if session=$(fm_codex_session_validate "$STATE" "$ID" "$META" resuming 2>/dev/null); then
+    binding_meta=$META
+  elif [ -f "$META_PRIOR" ] \
+       && session=$(fm_codex_session_validate "$STATE" "$ID" "$META_PRIOR" resuming 2>/dev/null); then
+    binding_meta=$META_PRIOR
+  else
+    if fm_codex_session_validate "$STATE" "$ID" "$META" uncertain >/dev/null 2>&1 \
+       || { [ -f "$META_PRIOR" ] \
+            && fm_codex_session_validate "$STATE" "$ID" "$META_PRIOR" uncertain >/dev/null 2>&1; }; then
+      die "task $ID has an uncertain exact Codex resume binding from a prior launch; speculative retry is refused"
+    fi
+    return 0
+  fi
+
+  attempt_phase=$(cat "$attempt" 2>/dev/null || true)
+  state=$(agent_state)
+  case "$state:$attempt_phase" in
+    dead:|dead:prepared)
+      if [ "$binding_meta" = "$META_PRIOR" ]; then
+        cp -p "$META_PRIOR" "$META" \
+          || die "task $ID has a safely recoverable pre-launch Codex resume, but its prior task record could not be restored"
+        binding_meta=$META
+      fi
+      fm_codex_session_transition "$STATE" "$ID" "$binding_meta" resuming parked >/dev/null \
+        || die "task $ID has a pre-launch Codex resume record that could not be restored to parked safely"
+      rm -f "$attempt"
+      ;;
+    *)
+      fm_codex_session_transition "$STATE" "$ID" "$binding_meta" resuming uncertain >/dev/null \
+        || die "task $ID has an in-flight Codex resume record that could not be marked uncertain safely"
+      die "prior exact Codex resume launch for task $ID is uncertain (attempt=${attempt_phase:-absent}, agent-state=$state); speculative retry is refused"
+      ;;
+  esac
+}
+
 do_relaunch() {
-  local exit_result state note_line
+  local exit_result state note_line attempt_phase current_tx
   local -a spawn_args
 
   require_state_verified_backend relaunch
   resolve_relaunch_profile
+
+  if [ "$RESUME_RELAUNCH" = 1 ]; then
+    codex_resume_supported_task
+    [ "$TARGET_HARNESS" = codex ] \
+      || die "--resume cannot switch task $ID away from Codex; exact-session resume requires both the recorded and target harness to be codex"
+    codex_resume_reconcile_prior_attempt
+  fi
 
   case "$KIND" in
     ship|scout)
@@ -804,33 +965,101 @@ do_relaunch() {
   journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line"
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
-  exit_result=$(do_exit)
-  journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+  if [ "$RESUME_RELAUNCH" = 1 ]; then
+    exit_result=$(do_resumable_codex_exit)
+    RELAUNCH_RESUME_SESSION=${exit_result##*session=}
+    fm_codex_session_uuid_valid "$RELAUNCH_RESUME_SESSION" \
+      || die "task $ID did not produce an exact resumable Codex session id"
+  else
+    exit_result=$(do_exit)
+    if [ -e "$STATE/$ID.codex-session" ] || [ -L "$STATE/$ID.codex-session" ]; then
+      fm_codex_session_retire "$STATE" "$ID" \
+        || die "task $ID stopped, but its prior Codex session binding could not be retired safely before disposable relaunch"
+    fi
+  fi
+  journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result" \
+    "resume_session=${RELAUNCH_RESUME_SESSION:-none}"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
   # per-task harness wiring before arming the new one, so nothing to do here.
   RELAUNCH_TX="${BASHPID:-$$}.$(date -u +%Y%m%dT%H%M%SZ).$RANDOM"
-  journal_write launching "${CHECKPOINT_LINES[@]}" "$note_line" "relaunch_tx=$RELAUNCH_TX"
+  if [ "$RESUME_RELAUNCH" = 1 ]; then
+    RELAUNCH_RESUME_SESSION=$(fm_codex_session_transition \
+      "$STATE" "$ID" "$META" parked resuming) \
+      || die "task $ID's parked Codex session binding changed before resume launch; refusing"
+    RELAUNCH_RESUME_ATTEMPT="$JOURNAL.resume-attempt"
+    rm -f "$RELAUNCH_RESUME_ATTEMPT"
+  fi
+  journal_write launching "${CHECKPOINT_LINES[@]}" "$note_line" "relaunch_tx=$RELAUNCH_TX" \
+    "resume_session=${RELAUNCH_RESUME_SESSION:-none}"
   spawn_args=("$ID" --relaunch --harness "$TARGET_HARNESS")
   [ "$TARGET_MODEL" = default ] || spawn_args+=(--model "$TARGET_MODEL")
   [ "$TARGET_EFFORT" = default ] || spawn_args+=(--effort "$TARGET_EFFORT")
+  if [ "$RESUME_RELAUNCH" = 1 ]; then
+    spawn_args+=(--resume-codex-session "$RELAUNCH_RESUME_SESSION" \
+      --resume-note-file "$NOTE_FILE")
+  fi
   if FM_CONTROL_RELAUNCH_TX="$RELAUNCH_TX" \
+      FM_CONTROL_CODEX_RESUME_ATTEMPT="$RELAUNCH_RESUME_ATTEMPT" \
       "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
     RELAUNCH_META_PUBLISHED=1
   else
     [ "$(fm_meta_get "$META" control_relaunch_tx)" != "$RELAUNCH_TX" ] \
       || RELAUNCH_META_PUBLISHED=1
+    if [ "$RESUME_RELAUNCH" = 1 ]; then
+      attempt_phase=$(cat "$RELAUNCH_RESUME_ATTEMPT" 2>/dev/null || true)
+      current_tx=$(fm_meta_get "$META" control_relaunch_tx)
+      case "$attempt_phase" in
+        launching|submitted)
+          RELAUNCH_RESUME_LAUNCH_UNCERTAIN=1
+          if [ "$current_tx" = "$RELAUNCH_TX" ]; then
+            fm_codex_session_rebind "$STATE" "$ID" "$META_PRIOR" "$META" resuming uncertain >/dev/null 2>&1 || true
+          else
+            fm_codex_session_transition "$STATE" "$ID" "$META_PRIOR" resuming uncertain >/dev/null 2>&1 || true
+          fi
+          ;;
+        *)
+          if [ "$current_tx" = "$RELAUNCH_TX" ]; then
+            fm_codex_session_rebind "$STATE" "$ID" "$META_PRIOR" "$META" resuming parked >/dev/null 2>&1 || {
+              RELAUNCH_RESUME_LAUNCH_UNCERTAIN=1
+            }
+          else
+            fm_codex_session_transition "$STATE" "$ID" "$META_PRIOR" resuming parked >/dev/null 2>&1 || {
+              RELAUNCH_RESUME_LAUNCH_UNCERTAIN=1
+            }
+          fi
+          ;;
+      esac
+    fi
     die "the replacement agent for $ID could not be launched on $TARGET_HARNESS"
   fi
 
   state=$(wait_agent_state "$LAUNCH_WAIT" alive) || {
+    if [ "$RESUME_RELAUNCH" = 1 ]; then
+      RELAUNCH_RESUME_LAUNCH_UNCERTAIN=1
+      fm_codex_session_rebind "$STATE" "$ID" "$META_PRIOR" "$META" resuming uncertain >/dev/null 2>&1 || true
+    fi
     die "the replacement agent for $ID did not come up within ${LAUNCH_WAIT}s (endpoint reads '$state')"
   }
   RELAUNCH_AGENT_CONFIRMED=1
 
-  journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+  if [ "$RESUME_RELAUNCH" = 1 ]; then
+    if ! fm_codex_session_rebind "$STATE" "$ID" "$META_PRIOR" "$META" resuming live >/dev/null; then
+      RELAUNCH_RESUME_LAUNCH_UNCERTAIN=1
+      fm_codex_session_rebind "$STATE" "$ID" "$META_PRIOR" "$META" resuming uncertain >/dev/null 2>&1 || true
+      die "the exact Codex session for $ID is running, but its new spawn incarnation could not be published; the binding is uncertain and speculative retry is refused"
+    fi
+  fi
+
+  journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result" \
+    "resume_session=${RELAUNCH_RESUME_SESSION:-none}"
   RELAUNCH_ACTIVE=0
-  echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
+  rm -f "$RELAUNCH_RESUME_ATTEMPT"
+  if [ "$RESUME_RELAUNCH" = 1 ]; then
+    echo "resumed $ID session=$RELAUNCH_RESUME_SESSION harness=codex model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
+  else
+    echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
+  fi
 }
 
 # --- verbs ------------------------------------------------------------------
@@ -853,7 +1082,15 @@ case "$VERB" in
     echo "interrupt-delivered $ID harness=$HARNESS backend=$BACKEND verified=$proof"
     ;;
   exit)
-    result=$(do_exit)
+    if [ "$RESUMABLE_EXIT" = 1 ]; then
+      result=$(do_resumable_codex_exit)
+    else
+      result=$(do_exit)
+      if [ -e "$STATE/$ID.codex-session" ] || [ -L "$STATE/$ID.codex-session" ]; then
+        fm_codex_session_retire "$STATE" "$ID" \
+          || die "task $ID stopped, but its prior Codex session binding could not be retired safely"
+      fi
+    fi
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)
