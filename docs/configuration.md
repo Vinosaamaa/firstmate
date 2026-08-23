@@ -10,7 +10,7 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
-`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, and scout reports.
+`data/` holds durable private fleet records such as the Firstmate and crew identity records, project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, and scout reports.
 `state/` holds runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, inactive terminal-outcome receipts under `state/terminal-outcomes/`, away-mode state, generated Relay artifacts, private secondmate config-reread generations with their retry and quarantine state, per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`), and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
 Untracked files and directories whose names begin with `scratchpad` are also gitignored, so temporary scratch does not make porcelain-based secondmate sync guards treat a home as dirty.
@@ -86,12 +86,14 @@ A herdr task additionally records `herdr_session=`, `herdr_workspace_id=`, `herd
 A zellij task additionally records `zellij_session=`, `zellij_tab_id=`, and `zellij_pane_id=`.
 An Orca task additionally records `orca_worktree_id=` and `terminal=`, with `window=fm-<id>` kept as the shared firstmate alias.
 A cmux task additionally records `cmux_workspace_id=` and `cmux_surface_id=`.
-Task selectors for `fm-peek.sh`, `fm-send.sh`, and `fm-crew-state.sh` resolve centrally through `fm_backend_resolve_selector`.
-A selector containing `:` is passed through as an explicit backend endpoint escape hatch.
-Otherwise an exact task id matching `state/<id>.meta` wins before the legacy `fm-<id>` label fallback, so task ids that themselves start with `fm-` route to their own metadata instead of being stripped.
+Task selectors for `fm-peek.sh`, `fm-send.sh`, `fm-control.sh`, and `fm-crew-state.sh` first resolve a callsign or exact task id through the shared identity contract in `bin/fm-identity-lib.sh`, then resolve the recorded backend endpoint through `fm_backend_resolve_selector`.
+The identity step is scoped to the canonical `FM_HOME` and accepts a callsign only when one active, structurally valid record binds it to one exact task metadata file.
+Missing, ambiguous, archived-only, historical-after-rename, home-conflicting, worktree-conflicting, and endpoint-conflicting names refuse instead of falling through to a guessed task.
+An exact task id remains supported, while the legacy `fm-<id>` label remains a compatibility selector only on data-plane reads and sends and is not accepted by lifecycle control.
+A selector containing `:` remains an explicit backend endpoint escape hatch for data-plane tools only and never becomes a callsign or lifecycle target.
 A metadata-routed selector returns the recorded backend target (`terminal=` for Orca, otherwise `window=`), and matching explicit targets can still recover the recorded backend when metadata contains the same endpoint.
-Only metadata-routed task selectors carry secondmate-marker and Codex-harness context; explicit endpoint escape hatches do not.
-These five sentences are the single owner of the task-selector vocabulary; backend guides and other documents point here instead of restating the resolution order.
+Only metadata-routed task selectors carry secondmate-marker and harness context, while explicit endpoint escape hatches do not.
+This paragraph is the operator-facing owner of the task-selector vocabulary, while the identity library header owns exact persistence, validation, migration, and lookup mechanics.
 `fm-teardown.sh <id>` takes a task id directly and validates the complete metadata-only endpoint identity before any runtime dispatch or cleanup mutation.
 Missing, empty, duplicate, malformed, backend-inconsistent, or task-mismatched endpoint records are preserved and refused.
 Legacy tmux metadata remains cleanup-compatible when its exact window name is `fm-<id>`; opaque non-tmux endpoints require their recorded `endpoint_task_id=` binding.
@@ -108,6 +110,17 @@ cmux has no session layer at all - one workspace per task, in whatever cmux wind
 The caller-facing label remains `fm-<id>`, but the actual cmux workspace title is scoped by the active `FM_HOME` readable label plus a short hash of the resolved `FM_ROOT` path as `fm-<home-label>-<id>`.
 Test cleanup must use the guarded path in [`docs/cmux-backend.md`](cmux-backend.md#current-operation-and-safety), never enumerate-and-close every workspace.
 `config/backend` is inherited into secondmate homes under the primary-authoritative contract owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
+
+## Persistent human identity (data/firstmate.identity / data/crew-identities/)
+
+Each canonical Firstmate home persists one human-friendly name in `data/firstmate.identity` and one immutable task-to-callsign history under `data/crew-identities/`.
+A fresh spawn reserves a deterministic unused callsign before endpoint creation and publishes the exact canonical home, task id, worktree, backend, endpoint, backend session, spawn incarnation, and known harness thread or session id before the agent launches.
+Relaunch and a future exact-thread resume update the same task binding without changing its callsign, while a genuinely fresh task must use a new task id and receives a new callsign.
+Teardown archives rather than deletes the task identity record, and every retired callsign from an explicit rename remains reserved permanently within that home.
+Locked session start creates the home identity and migrates active or archived legacy task records with deterministic fallback callsigns, while read-only views calculate a clearly sourced fallback without mutating the home.
+Use `bin/fm-name.sh home`, `bin/fm-name.sh rename-home <new-name>`, `bin/fm-name.sh rename <task-id-or-callsign> <new-callsign>`, `bin/fm-name.sh resolve <task-id-or-callsign>`, and `bin/fm-name.sh history` with an explicit `FM_HOME`.
+Names are case-insensitive for uniqueness and routing, and reserved names, task-id collisions, active collisions, retired collisions, malformed records, and unsafe binding conflicts are refused.
+The header and executable functions in `bin/fm-identity-lib.sh` are the single owner of record fields, atomic mutation, automatic naming, non-rebinding, and migration mechanics.
 
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 

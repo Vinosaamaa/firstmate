@@ -194,7 +194,7 @@ test_spawn_refuses_and_admits() {
   # no-regression: neutral cwd, marker UNSET, genuine isolated worktree.
   out=$(run_spawn "$NORMAL_CWD" "$home" spawn-ok "$proj" "$wt" "$fakebin"); rc=$?
   expect_code 0 "$rc" "spawn: a normal session must still spawn"
-  assert_contains "$out" "spawned spawn-ok" "spawn: normal launch should report success"
+  assert_contains "$out" "(spawn-ok)" "spawn: normal launch should report success"
   assert_not_contains "$out" "$ENV_MSG" "spawn: normal launch must not print the gate refusal"
   assert_not_contains "$out" "$PATH_MSG" "spawn: normal launch must not print the backstop refusal"
   assert_present "$home/state/spawn-ok.meta" "spawn: normal launch should record meta"

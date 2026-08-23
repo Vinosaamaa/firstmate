@@ -229,7 +229,7 @@ EOF
   out=$(run_muse_spawn "$home" "$proj" "$wt" "$fakebin" "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "muse spawn should succeed"
-  assert_contains "$out" "spawned $id harness=muse" "muse spawn did not report success"
+  assert_contains "$out" "($id) harness=muse" "muse spawn did not report success"
 
   launch=$(cat "$home/launch.log")
   # --yolo is what makes a crewmate pane viable at all: without it muse holds

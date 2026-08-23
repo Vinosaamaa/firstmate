@@ -210,7 +210,7 @@ test_spawn_isolation_abort() {
   # Proceed: the pane resolves to a genuine, isolated worktree.
   out=$(run_spawn "$home" ok-isolated-ff6 "$proj" "$TMP_ROOT/spawn-wt" "$fakebin"); status=$?
   expect_code 0 "$status" "spawn into a genuine isolated worktree should succeed"
-  assert_contains "$out" "spawned ok-isolated-ff6" "isolated spawn did not report success"
+  assert_contains "$out" "(ok-isolated-ff6)" "isolated spawn did not report success"
   assert_not_contains "$out" "did not yield an isolated worktree" "isolated spawn wrongly tripped the guard"
   pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
 }
@@ -279,7 +279,7 @@ test_spawn_tmux_window_construction() {
 
   out=$(run_spawn_record "$home" rec-win-gg7 "$proj" "$wt" "$fakebin" "$rec"); status=$?
   expect_code 0 "$status" "spawn into a genuine worktree should succeed"
-  assert_contains "$out" "spawned rec-win-gg7" "recording spawn did not report success"
+  assert_contains "$out" "(rec-win-gg7)" "recording spawn did not report success"
 
   # Bug 1 fix: append-form window creation (trailing colon on the session target).
   assert_grep "new-window -dP -F #{window_id} -t firstmate: -n fm-rec-win-gg7" "$rec" \

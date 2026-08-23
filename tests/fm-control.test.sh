@@ -231,7 +231,7 @@ test_exit_types_each_harness_verified_command() {
     IFS=$'\t' read -r expected key repeat clear <<< "$(verified_adapter_contract "$harness")"
     [ "$(literals "$dir")" = "$expected" ] \
       || fail "exit on $harness should type exactly '$expected', got: $(literals "$dir")"
-    assert_contains "$out" "stopped t1 harness=$harness" "exit should report the stop for $harness"
+    assert_contains "$out" "(t1) harness=$harness" "exit should report the callsign and stop for $harness"
   done
   pass "fm-control exit: every verified harness gets its own verified exit command"
 }
@@ -303,7 +303,7 @@ test_prefixed_recorded_harness_reaches_each_control_verb() {
   expect_code 0 "$rc" "exit should resolve a prefixed recorded harness"$'\n'"$out"
   [ "$(literals "$dir")" = /exit ] \
     || fail "a grok-prefixed task should receive grok's exit command"
-  assert_contains "$out" "stopped t1 harness=grok" \
+  assert_contains "$out" "(t1) harness=grok" \
     "exit should report the verified adapter that supplied its mechanics"
   pass "fm-control: prefixed recorded harnesses reach interrupt and exit mechanics"
 }
@@ -475,8 +475,23 @@ test_unknown_task_is_refused() {
   add_task "$dir" t1 claude
   out=$(run_control "$dir" t2 exit); rc=$?
   expect_code 1 "$rc" "an unknown task should refuse"
-  assert_contains "$out" "no task 't2'" "the refusal should name the missing task"
+  assert_contains "$out" "no callsign or task 't2'" "the refusal should name the missing selector"
   pass "fm-control: an unrecorded task id is refused"
+}
+
+test_callsign_routes_to_one_exact_task() {
+  local dir out rc renamed
+  dir=$(new_case callsign)
+  add_task "$dir" t1 claude
+  renamed=$(env FM_HOME="$dir/home" "$ROOT/bin/fm-name.sh" rename t1 Hopper 2>&1) \
+    || fail "assigning an explicit callsign should succeed: $renamed"
+  alive_as "$dir" claude
+  out=$(run_control "$dir" Hopper exit); rc=$?
+  expect_code 0 "$rc" "a callsign should route to its exact task"$'\n'"$out"
+  assert_contains "$out" "Hopper (t1)" "control output should lead with the callsign and retain the task id"
+  [ "$(literals "$dir")" = /exit ] \
+    || fail "the callsign should deliver exactly one verified exit command"
+  pass "fm-control: a callsign routes to one exact task"
 }
 
 test_record_bound_to_another_task_is_refused() {
@@ -597,8 +612,10 @@ test_resume_is_refused_with_its_reason() {
   add_task "$dir" t1 claude
   out=$(run_control "$dir" t1 resume); rc=$?
   expect_code 2 "$rc" "resume should be refused"
-  assert_contains "$out" "not deterministic across the verified adapters" \
-    "the refusal should explain why resume is excluded"
+  assert_contains "$out" "resume resolved" \
+    "resume refusal should prove names-first resolution happened before capability gating"
+  assert_contains "$out" "exact-thread resume is not installed for this task" \
+    "the refusal should name the task-scoped capability boundary"
   assert_contains "$out" "relaunch" "the refusal should point at the deterministic alternative"
   pass "fm-control: resume is refused with the determinism reason and the alternative"
 }
@@ -623,7 +640,8 @@ test_already_stopped_exit_is_idempotent() {
   alive_as "$dir" zsh
   out=$(run_control "$dir" t1 exit); rc=$?
   expect_code 0 "$rc" "exiting an already-stopped agent should succeed"
-  assert_contains "$out" "already-stopped t1" "the outcome should say it was already stopped"
+  assert_contains "$out" "already-stopped" "the outcome should say it was already stopped"
+  assert_contains "$out" "(t1)" "the already-stopped outcome should retain the exact task id"
   [ -z "$(literals "$dir")" ] || fail "an already-stopped agent must not be sent an exit command"
   pass "fm-control exit: an already-stopped agent is idempotent success with no bytes sent"
 }
@@ -766,7 +784,7 @@ test_exit_accepts_agent_stopped_by_busy_interrupt() {
   printf 'busy_gen=%s\n' "$gen" >> "$dir/home/state/t1.meta"
   out=$(FM_FAKE_INTERRUPT_STOPS_AGENT=1 run_control "$dir" t1 exit); rc=$?
   expect_code 0 "$rc" "exit should accept a busy agent stopped by interrupt"$'\n'"$out"
-  assert_contains "$out" "stopped t1 harness=claude" \
+  assert_contains "$out" "(t1) harness=claude" \
     "the authoritative gone-state should complete exit successfully"
   [ "$(keys_sent "$dir")" = Escape ] \
     || fail "exit should deliver the busy agent's interrupt sequence"
@@ -887,6 +905,7 @@ test_state_verified_backends_are_exactly_tmux_and_herdr
 test_window_label_is_refused_with_the_exact_id
 test_explicit_endpoint_is_refused
 test_unknown_task_is_refused
+test_callsign_routes_to_one_exact_task
 test_record_bound_to_another_task_is_refused
 test_remote_secondmate_is_refused_by_placement
 test_interrupt_and_exit_lock_before_task_state_resolution

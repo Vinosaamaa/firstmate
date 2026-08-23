@@ -130,9 +130,7 @@ test_unresolvable_target_does_not_tmux_fallback() {
   PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_FAKE_TMUX_WINDOW=lost-target FM_SEND_SETTLE=0 \
     "$SEND" lost-target "hello" >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "unresolvable target should fail"
-  assert_contains "$(cat "$err")" "not resolvable" "unresolvable diagnostic should be loud"
-  assert_contains "$(cat "$err")" "metadata window/terminal lookup" "unresolvable diagnostic should name the attempted lookup"
-  assert_contains "$(cat "$err")" "backend=none" "unresolvable diagnostic should name that no backend was assumed"
+  assert_contains "$(cat "$err")" "no callsign or task 'lost-target'" "unresolvable diagnostic should be names-first and loud"
   [ ! -s "$log" ] || fail "unresolvable target fell through to tmux send"$'\n'"$(cat "$log")"
   pass "fm-send strict: unresolvable selectors do not fall back to tmux"
 }

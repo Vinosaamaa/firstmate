@@ -256,6 +256,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-identity-lib.sh
+. "$SCRIPT_DIR/fm-identity-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-codex-session-lib.sh
@@ -524,6 +526,21 @@ spawn_remote_secondmate() {
       return 1
     fi
   fi
+  if [ ! -f "$(fm_identity_task_record "$id")" ]; then
+    if [ -f "$meta" ]; then
+      CALLSIGN=$(fm_identity_ensure_task_from_meta "$meta" "$id" legacy) || {
+        fm_lock_release "$registry_lock" || true
+        fm_lock_release "$SPAWN_TASK_LOCK" || true
+        return 1
+      }
+    else
+      CALLSIGN=$(fm_identity_reserve_fresh_task "$id") || {
+        fm_lock_release "$registry_lock" || true
+        fm_lock_release "$SPAWN_TASK_LOCK" || true
+        return 1
+      }
+    fi
+  fi
   # Gate the host before anything is published or transferred, so a host that
   # cannot hold a durable Herdr endpoint refuses here rather than half-way
   # through a launch. This is also the readiness gate every liveness relaunch
@@ -659,6 +676,17 @@ spawn_remote_secondmate() {
     [ -z "$remote_recorded_traceparent" ] || echo "traceparent=$remote_recorded_traceparent"
   } > "$tmp"
   mv -f -- "$tmp" "$meta"
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$meta" "$id" rebind) || {
+    echo "error: remote secondmate $id launched, but its persistent callsign binding could not be published; endpoint metadata is preserved" >&2
+    if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
+      SPAWN_TASK_SET_LOCK_HELD=0
+      fm_lock_release "$SPAWN_TASK_SET_LOCK" || true
+    fi
+    fm_lock_release "$remote_lock" || true
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    return 1
+  }
   if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_SET_LOCK_HELD=0
     fm_lock_release "$SPAWN_TASK_SET_LOCK"
@@ -670,7 +698,7 @@ spawn_remote_secondmate() {
     echo "error: remote secondmate $id launched, but its reply source could not be armed; endpoint metadata is preserved" >&2
     return 1
   fi
-  echo "spawned $id harness=$harness kind=secondmate mode=secondmate yolo=off window=remote:$id worktree=$home remote=$host backend=$remote_backend"
+  echo "spawned $CALLSIGN ($id) harness=$harness kind=secondmate mode=secondmate yolo=off window=remote:$id worktree=$home remote=$host backend=$remote_backend"
   return 0
 }
 
@@ -1024,6 +1052,22 @@ if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   exit 1
 fi
 SPAWN_TASK_LOCK_HELD=1
+CALLSIGN=
+IDENTITY_FRESH_RESERVED=0
+IDENTITY_REBIND_ALLOWED=0
+if [ "$RELAUNCH" -eq 0 ]; then
+  if [ "$KIND" = secondmate ] && [ -f "$STATE/$ID.meta" ]; then
+    # Bootstrap's established secondmate recovery path predates --relaunch and
+    # intentionally invokes an ordinary --secondmate spawn against the durable
+    # task record. It is a continuation, not a fresh task: validate/adopt the
+    # existing binding now and publish its replacement endpoint below.
+    CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1) || exit 1
+    IDENTITY_REBIND_ALLOWED=1
+  else
+    CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
+    IDENTITY_FRESH_RESERVED=1
+  fi
+fi
 PROJ=
 ARG3=
 FIRSTMATE_HOME=
@@ -2776,6 +2820,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
 fi
+if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
+  CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
+else
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+fi
 if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   # The record is published, so this task is now part of the set a teardown
   # enumerates and locks per task. The set lock is only needed across that
@@ -2947,4 +2998,4 @@ fi
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+echo "spawned $CALLSIGN ($ID) harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"

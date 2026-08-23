@@ -152,6 +152,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-identity-lib.sh
+. "$SCRIPT_DIR/fm-identity-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-codex-session-lib.sh
@@ -2687,6 +2689,15 @@ fi
 # pruned code root. Best effort - a sweep failure never blocks this teardown.
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
 
+# Publish or validate the task's durable callsign only after every cleanup
+# prerequisite above has passed, but before returning its worktree or closing
+# its endpoint. A malformed/conflicting identity therefore refuses while all
+# recoverable task state is still intact; final retirement below only flips
+# this already-validated binding to its historical tombstone.
+ARCHIVED_CALLSIGN=$(fm_identity_ensure_task_from_meta "$META" "$ID" 1) || {
+  echo "error: task $ID's persistent callsign could not be validated; nothing was changed" >&2
+  exit 1
+}
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -2833,6 +2844,10 @@ fm_codex_session_retire "$STATE" "$ID" || {
   echo "error: exact Codex session binding for $ID could not be retired safely; retaining task metadata" >&2
   exit 1
 }
+ARCHIVED_CALLSIGN=$(fm_identity_archive_task "$META" "$ID") || {
+  echo "error: task $ID cleanup reached record retirement, but its callsign history could not be archived; retaining task metadata for a safe retry" >&2
+  exit 1
+}
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
@@ -2849,5 +2864,5 @@ META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi
-echo "teardown $ID complete (window $T, worktree $WT)"
+echo "teardown $ARCHIVED_CALLSIGN ($ID) complete (window $T, worktree $WT)"
 backlog_refresh_reminder
