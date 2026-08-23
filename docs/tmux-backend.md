@@ -44,10 +44,18 @@ Verify setup by spawning a small task and confirming its `fm-<id>` window appear
 
 ## Current behavior and safety
 
+### Stable task routing
+
+Firstmate binds each newly launched tmux task to its stable pane id, pane tty, foreground agent pid, process start time, executable identity, and argv[0].
+The pane id remains the route when the pane moves between windows or its containing window is renamed.
+Before a metadata-addressed send, capture, supervision read, roster read, or lifecycle delivery, Firstmate resolves that pane directly and checks the saved tty and process tuple by direct pid.
+A missing pane, restarted or replaced process, reused pid with another start time, changed tty, or changed agent identity refuses before transport without discovering another process or mutating task metadata.
+Legacy task records without the stable tuple retain their window route until they are relaunched through the current spawn path.
+
 ### Agent liveness probe
 
 A target-existence check proves only that the pane exists.
-The deeper tmux agent-liveness probe first verifies exact window membership, then reads process names to distinguish a running harness from a bare idle shell.
+The deeper tmux agent-liveness probe verifies a stable pane directly for current records or exact window membership for legacy records, then reads process names to distinguish a running harness from a bare idle shell.
 It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 Only `dead` and `missing` authorize recovery because a false dead result could launch a duplicate agent.
 

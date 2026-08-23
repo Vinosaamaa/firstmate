@@ -69,6 +69,7 @@ A cmux spawn additionally version-gates against the installed `cmux` binary's ve
 A backend spawn refusal from a missing dependency, version gate, or unauthenticated socket is terminal for that selected backend; firstmate surfaces it as a blocker instead of silently retrying another backend.
 Task meta records `backend=` only for a non-default backend; an absent `backend=` means `tmux`, preserving existing default-path meta files.
 Every new task records `endpoint_task_id=` as the cleanup binding between the metadata filename and its opaque runtime endpoint.
+A tmux task additionally records `tmux_pane_id=`, `tmux_pane_tty=`, `tmux_agent_pid=`, `tmux_agent_start=`, `tmux_agent_comm=`, and `tmux_agent_argv0=` after spawn-time process discovery binds the launched foreground agent.
 A herdr task additionally records `herdr_session=`, `herdr_workspace_id=`, `herdr_tab_id=`, and `herdr_pane_id=`.
 A zellij task additionally records `zellij_session=`, `zellij_tab_id=`, and `zellij_pane_id=`.
 An Orca task additionally records `orca_worktree_id=` and `terminal=`, with `window=fm-<id>` kept as the shared firstmate alias.
@@ -78,12 +79,14 @@ The identity step is scoped to the canonical `FM_HOME` and accepts a callsign on
 Missing, ambiguous, archived-only, historical-after-rename, home-conflicting, worktree-conflicting, and endpoint-conflicting names refuse instead of falling through to a guessed task.
 An exact task id remains supported, while the legacy `fm-<id>` label remains a compatibility selector only on data-plane reads and sends and is not accepted by lifecycle control.
 A selector containing `:` remains an explicit backend endpoint escape hatch for data-plane tools only and never becomes a callsign or lifecycle target.
-A metadata-routed selector returns the recorded backend target (`terminal=` for Orca, otherwise `window=`), and matching explicit targets can still recover the recorded backend when metadata contains the same endpoint.
+A metadata-routed selector returns the recorded backend target (`terminal=` for Orca, `tmux_pane_id=` for a bound tmux task, otherwise `window=`), and matching explicit targets can still recover the recorded backend when metadata contains the same endpoint.
+Normal routing of a bound tmux task directly verifies its saved pane id and tty plus the saved process pid, start time, tty, comm, and argv[0] before returning that pane.
+That verification performs one direct pane lookup and direct saved-pid lookup without a tmux inventory scan, process discovery, metadata mutation, relaunch, or conversation call.
 Only metadata-routed task selectors carry secondmate-marker and harness context, while explicit endpoint escape hatches do not.
 This paragraph is the operator-facing owner of the task-selector vocabulary, while the identity library header owns exact persistence, validation, migration, and lookup mechanics.
 `fm-teardown.sh <id>` takes a task id directly and validates the complete metadata-only endpoint identity before any runtime dispatch or cleanup mutation.
 Missing, empty, duplicate, malformed, backend-inconsistent, or task-mismatched endpoint records are preserved and refused.
-Legacy tmux metadata remains cleanup-compatible when its exact window name is `fm-<id>`; opaque non-tmux endpoints require their recorded `endpoint_task_id=` binding.
+Legacy tmux metadata remains cleanup-compatible when its exact window name is `fm-<id>`; stable tmux pane metadata and opaque non-tmux endpoints require their recorded `endpoint_task_id=` binding.
 `FM_HOME` determines Herdr's home label: the primary home uses `firstmate`, and a secondmate home marked by `.fm-secondmate-home` uses `2ndmate-<secondmate-id>`.
 [`herdr-backend.md`](herdr-backend.md#watching-and-task-containers) owns launcher-bound workspace placement, the label-only fallback, collision handling, and recovery behavior.
 The local `config/herdr-presentation-spaces` file instead opts a home out of, or explicitly in to, Herdr's default-on disposable single-task visual projection; [Presentation spaces](herdr-backend.md#presentation-spaces) owns its accepted values, default, Herdr version floor, migration, behavior, safety limits, recovery contract, and narrow locked session-start cleanup of exact restored idle-shell children.
