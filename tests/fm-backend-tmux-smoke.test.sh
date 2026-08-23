@@ -175,9 +175,12 @@ pass "real tmux: kill removes the window and the readable session inventory auth
 
 # This credential-free Codex stand-in is a real foreground process whose
 # executable argv[0] is codex and whose stdin remains readable for routing.
-ln -s "$CAT_BIN" "$SHIM_DIR/codex"
+CODEX_INSTALL="$SHIM_DIR/codex install"
+mkdir -p "$CODEX_INSTALL"
+ln -s "$CAT_BIN" "$CODEX_INSTALL/codex"
+CODEX_BIN="$CODEX_INSTALL/codex"
 mkdir -p "$SHIM_DIR/state"
-tmux new-window -d -t "$SESSION:" -n route-old -- "$SHIM_DIR/codex" \
+tmux new-window -d -t "$SESSION:" -n route-old -- "$CODEX_BIN" - \
   || fail "could not create the stable-route Codex stand-in"
 ROUTE_TARGET="$SESSION:route-old"
 for _ in $(seq 1 100); do
@@ -192,6 +195,8 @@ ROUTE_PID=$FM_BACKEND_TMUX_AGENT_PID
 ROUTE_START=$FM_BACKEND_TMUX_AGENT_START
 ROUTE_COMM=$FM_BACKEND_TMUX_AGENT_COMM
 ROUTE_ARGV0=$FM_BACKEND_TMUX_AGENT_ARGV0
+[ "$ROUTE_ARGV0" = "$CODEX_BIN" ] \
+  || fail "spawn-time discovery read whitespace-containing Codex comm/argv[0] as '$ROUTE_COMM' / '$ROUTE_ARGV0', expected '$CODEX_BIN'"
 ROUTE_META="$SHIM_DIR/state/route.meta"
 cat > "$ROUTE_META" <<EOF
 window=$ROUTE_PANE
@@ -202,6 +207,7 @@ harness=codex
 kind=ship
 tmux_pane_id=$ROUTE_PANE
 tmux_pane_tty=$ROUTE_TTY
+tmux_identity_status=bound
 tmux_agent_pid=$ROUTE_PID
 tmux_agent_start=$ROUTE_START
 tmux_agent_comm=$ROUTE_COMM
@@ -248,7 +254,7 @@ pass "real tmux: stable pane/task identity survives pane move and window rename 
 # Replacing the process in the same pane must fail before fm-send reaches the
 # transport, even when the replacement still has a Codex-shaped executable.
 sleep 1.1
-tmux respawn-pane -k -t "$ROUTE_PANE" "$SHIM_DIR/codex" \
+tmux respawn-pane -k -t "$ROUTE_PANE" "$CODEX_BIN" - \
   || fail "could not replace the Codex stand-in in the same pane"
 REPLACEMENT_PID=
 for _ in $(seq 1 100); do
@@ -284,6 +290,7 @@ harness=codex
 kind=ship
 tmux_pane_id=$ROUTE_PANE
 tmux_pane_tty=$ROUTE_TTY
+tmux_identity_status=bound
 tmux_agent_pid=$REPLACEMENT_PID
 tmux_agent_start=$ROUTE_START
 tmux_agent_comm=$REPLACEMENT_COMM
@@ -299,6 +306,34 @@ fi
 [ "$(cksum "$REUSE_META")" = "$before_meta" ] \
   || fail "PID-reuse refusal mutated task metadata"
 pass "real tmux: reused pid with a different start time is refused before fm-send"
+
+# A post-launch binding failure retains an explicit cleanup-only record.
+# It is never routable, but guarded teardown can still retire the exact pane.
+FAILED_META="$SHIM_DIR/state/failed.meta"
+cat > "$FAILED_META" <<EOF
+window=$ROUTE_PANE
+endpoint_task_id=failed
+worktree=$SHIM_DIR
+project=$SHIM_DIR
+harness=codex
+kind=ship
+tmux_pane_id=$ROUTE_PANE
+tmux_pane_tty=$ROUTE_TTY
+tmux_identity_status=failed
+EOF
+fm_backend_validate_task_endpoint "$FAILED_META" failed \
+  || fail "failed identity metadata was not retained as a guarded cleanup record"
+[ "$FM_BACKEND_VALIDATED_TARGET" = "$ROUTE_PANE" ] \
+  || fail "failed identity cleanup record did not retain the exact pane id"
+if fm_backend_target_of_meta "$FAILED_META" >/dev/null 2>&1; then
+  fail "failed identity metadata became routable"
+fi
+fm_backend_kill "$FM_BACKEND_VALIDATED_BACKEND" "$FM_BACKEND_VALIDATED_TARGET" \
+  || fail "failed identity cleanup record could not retire its exact pane"
+if tmux list-panes -a -F '#{pane_id}' | grep -Fqx "$ROUTE_PANE"; then
+  fail "failed identity cleanup left the exact pane live"
+fi
+pass "real tmux: failed post-launch identity records stay unroutable and retain exact cleanup authority"
 
 cleanup_all
 trap - EXIT

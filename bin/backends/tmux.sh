@@ -77,7 +77,14 @@ fm_backend_tmux_process_sample() {  # <pid>
   [ "$pid" = "$wanted" ] && [ -n "$tty" ] && [ -n "$comm" ] || return 1
   args=$(LC_ALL=C ps -p "$wanted" -o args= 2>/dev/null) || return 1
   args=${args#"${args%%[![:space:]]*}"}
-  argv0=${args%%[[:space:]]*}
+  if [ -r "/proc/$wanted/cmdline" ]; then
+    argv0=$(LC_ALL=C tr '\0' '\n' < "/proc/$wanted/cmdline" 2>/dev/null | sed -n '1p')
+  else
+    case "$args" in
+      "$comm"|"$comm "*) argv0=$comm ;;
+      *) argv0=${args%%[[:space:]]*} ;;
+    esac
+  fi
   [ -n "$argv0" ] || return 1
   # shellcheck disable=SC2034 # Output globals are consumed by binding/verification callers.
   FM_BACKEND_TMUX_AGENT_PID=$pid

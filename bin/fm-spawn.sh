@@ -2748,6 +2748,7 @@ META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
+TMUX_IDENTITY_META_KEYS="tmux_pane_id tmux_pane_tty tmux_identity_status tmux_agent_pid tmux_agent_start tmux_agent_comm tmux_agent_argv0"
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
@@ -2756,9 +2757,11 @@ if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_PATH=$SPAWN_META_TMP
 fi
 preserve_relaunch_meta() {
-  awk -F= '
+  awk -F= -v tmux_keys="$TMUX_IDENTITY_META_KEYS" '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend tmux_pane_id tmux_pane_tty tmux_agent_pid tmux_agent_start tmux_agent_comm tmux_agent_argv0 herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      for (i in keys) owned[keys[i]] = 1
+      split(tmux_keys, keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2786,6 +2789,7 @@ preserve_relaunch_meta() {
   if [ "$BACKEND" = tmux ]; then
     echo "tmux_pane_id=$TMUX_PANE_ID"
     echo "tmux_pane_tty=$TMUX_PANE_TTY"
+    echo "tmux_identity_status=pending"
   fi
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"
@@ -2944,10 +2948,11 @@ spawn_bind_tmux_identity() {
   tmp="$STATE/.$ID.meta.tmux-identity.${BASHPID:-$$}"
   SPAWN_META_TMP=$tmp
   if [ ! -f "$meta" ] || [ ! -w "$meta" ] \
-     || ! awk -F= '$1 != "tmux_pane_id" && $1 != "tmux_pane_tty" && $1 != "tmux_agent_pid" && $1 != "tmux_agent_start" && $1 != "tmux_agent_comm" && $1 != "tmux_agent_argv0"' "$meta" > "$tmp" \
+     || ! spawn_without_tmux_identity "$meta" > "$tmp" \
      || ! {
        printf 'tmux_pane_id=%s\n' "$TMUX_PANE_ID"
        printf 'tmux_pane_tty=%s\n' "$TMUX_PANE_TTY"
+       printf 'tmux_identity_status=bound\n'
        printf 'tmux_agent_pid=%s\n' "$FM_BACKEND_TMUX_AGENT_PID"
        printf 'tmux_agent_start=%s\n' "$FM_BACKEND_TMUX_AGENT_START"
        printf 'tmux_agent_comm=%s\n' "$FM_BACKEND_TMUX_AGENT_COMM"
@@ -2960,6 +2965,53 @@ spawn_bind_tmux_identity() {
   SPAWN_META_TMP=
   fm_lock_release "$SPAWN_META_LOCK" || status=1
   SPAWN_META_LOCK_HELD=0
+  return "$status"
+}
+
+spawn_without_tmux_identity() {  # <meta-file>
+  awk -F= -v keys="$TMUX_IDENTITY_META_KEYS" '
+    BEGIN {
+      split(keys, fields, " ")
+      for (i in fields) owned[fields[i]] = 1
+    }
+    !($1 in owned)
+  ' "$1"
+}
+
+spawn_quarantine_tmux_identity() {
+  local meta="$STATE/$ID.meta" tmp status=0 observed
+  SPAWN_META_LOCK=$(fm_meta_lock_path "$meta") || status=1
+  if [ "$status" -eq 0 ]; then
+    fm_lock_acquire_wait "$SPAWN_META_LOCK"
+    SPAWN_META_LOCK_HELD=1
+    tmp="$STATE/.$ID.meta.tmux-identity-failed.${BASHPID:-$$}"
+    SPAWN_META_TMP=$tmp
+    if [ ! -f "$meta" ] || [ ! -w "$meta" ] \
+       || ! spawn_without_tmux_identity "$meta" > "$tmp" \
+       || ! {
+         printf 'tmux_pane_id=%s\n' "$TMUX_PANE_ID"
+         printf 'tmux_pane_tty=%s\n' "$TMUX_PANE_TTY"
+         printf 'tmux_identity_status=failed\n'
+       } >> "$tmp" \
+       || ! mv -f "$tmp" "$meta"; then
+      status=1
+      rm -f "$tmp" 2>/dev/null || true
+    fi
+    SPAWN_META_TMP=
+    fm_lock_release "$SPAWN_META_LOCK" || status=1
+    SPAWN_META_LOCK_HELD=0
+  fi
+  observed=$(tmux display-message -p -t "$TMUX_PANE_ID" '#{pane_id}|#{pane_tty}' 2>/dev/null) || observed=
+  if [ -n "$observed" ]; then
+    if [ "$observed" = "$TMUX_PANE_ID|$TMUX_PANE_TTY" ]; then
+      fm_backend_tmux_kill "$TMUX_PANE_ID" || status=1
+      if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -Fqx "$TMUX_PANE_ID"; then
+        status=1
+      fi
+    else
+      status=1
+    fi
+  fi
   return "$status"
 }
 
@@ -3008,7 +3060,11 @@ if [ "$RESUME_CODEX_SET" -eq 1 ]; then
 fi
 if [ "$BACKEND" = tmux ]; then
   spawn_bind_tmux_identity || {
-    echo "error: task $ID launched, but its stable tmux pane/process identity could not be bound; refusing to publish it as routable" >&2
+    if spawn_quarantine_tmux_identity; then
+      echo "error: task $ID launched, but its stable tmux pane/process identity could not be bound; the exact pane was retired and fail-closed metadata was retained" >&2
+    else
+      echo "error: task $ID launched, but its stable tmux pane/process identity could not be bound; cleanup is incomplete and fail-closed metadata was retained" >&2
+    fi
     exit 1
   }
 fi

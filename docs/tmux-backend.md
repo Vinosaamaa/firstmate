@@ -50,6 +50,7 @@ Firstmate binds each newly launched tmux task to its stable pane id, pane tty, f
 The pane id remains the route when the pane moves between windows or its containing window is renamed.
 Before a metadata-addressed send, capture, supervision read, roster read, or lifecycle delivery, Firstmate resolves that pane directly and checks the saved tty and process tuple by direct pid.
 A missing pane, restarted or replaced process, reused pid with another start time, changed tty, or changed agent identity refuses before transport without discovering another process or mutating task metadata.
+If post-launch identity binding fails, Firstmate marks the record failed and retires the exact pane so no unbound worker remains live while the worktree stays available for guarded teardown.
 Legacy task records without the stable tuple retain their window route until they are relaunched through the current spawn path.
 
 ### Agent liveness probe

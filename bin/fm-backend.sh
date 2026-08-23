@@ -410,7 +410,7 @@ fm_backend_endpoint_atom_valid() {  # <value>
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
   local session pane recorded_session workspace tab terminal worktree_id surface
-  local pane_count tty pid start comm argv0 digits
+  local pane_count tty pid start comm argv0 digits identity_status_count identity_status
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
@@ -484,6 +484,12 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         }
         pane=$(fm_backend_meta_exact_value "$meta" tmux_pane_id) || pane=
         tty=$(fm_backend_meta_exact_value "$meta" tmux_pane_tty) || tty=
+        identity_status_count=$(grep -c '^tmux_identity_status=' "$meta" 2>/dev/null || true)
+        case "$identity_status_count" in
+          0) identity_status=legacy ;;
+          1) identity_status=$(fm_backend_meta_exact_value "$meta" tmux_identity_status) || identity_status= ;;
+          *) identity_status= ;;
+        esac
         pid=$(fm_backend_meta_exact_value "$meta" tmux_agent_pid) || pid=
         start=$(fm_backend_meta_exact_value "$meta" tmux_agent_start) || start=
         comm=$(fm_backend_meta_exact_value "$meta" tmux_agent_comm) || comm=
@@ -491,10 +497,17 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
         digits=${pane#%}
         case "$digits" in ''|*[!0-9]*) digits= ;; esac
         case "$tty" in /dev/*) ;; *) digits= ;; esac
-        case "$pid" in ''|*[!0-9]*) digits= ;; esac
+        case "$identity_status" in
+          bound|legacy) case "$pid" in ''|*[!0-9]*) digits= ;; esac ;;
+          failed)
+            [ -z "$pid$start$comm$argv0" ] || digits=
+            ;;
+          *) digits= ;;
+        esac
         case "$start$comm$argv0$tty" in *$'\n'*|*$'\r'*|*$'\t'*) digits= ;; esac
-        if [ -z "$digits" ] || [ -z "$start" ] || [ -z "$comm" ] || [ -z "$argv0" ] \
-          || [ "${pane#%}" = "$pane" ]; then
+        if [ -z "$digits" ] || [ "${pane#%}" = "$pane" ] || [ "$window" != "$pane" ] \
+          || { [ "$identity_status" != failed ] \
+            && { [ -z "$start" ] || [ -z "$comm" ] || [ -z "$argv0" ]; }; }; then
           echo "REFUSED: stable tmux endpoint metadata for task $id is missing, ambiguous, malformed, or inconsistent; preserving task state." >&2
           return 1
         fi
