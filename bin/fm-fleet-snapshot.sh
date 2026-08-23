@@ -146,6 +146,9 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-backend.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-identity-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-identity-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
@@ -238,7 +241,11 @@ crew_state_json() {  # <id>
       state=${rest%%"$sep"source: *}
       rest=${rest#*"$sep"source: }
       case "$rest" in
-        *"$sep"*) source=${rest%%"$sep"*}; detail=${rest#*"$sep"} ;;
+        *"$sep"*)
+          source=${rest%%"$sep"*}
+          detail=${rest#*"$sep"}
+          case "$detail" in *"$sep"identity:\ *) detail=${detail%"$sep"identity:*} ;; esac
+          ;;
         *) source=$rest ;;
       esac
       ;;
@@ -425,7 +432,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 }
 
 task_json_lines() {
-  local meta id kind harness mode yolo project worktree home projects backend target status_log report_path
+  local meta id callsign kind harness mode yolo project worktree home projects backend target status_log report_path
   local remote_host remote_root remote_state remote_rc remote_home_present
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
@@ -434,6 +441,7 @@ task_json_lines() {
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
     id=$(basename "$meta" .meta)
+    callsign=$(fm_identity_display_callsign "$id")
     kind=$(meta_value "$meta" kind)
     [ -n "$kind" ] || kind=ship
     harness=$(meta_value "$meta" harness)
@@ -554,6 +562,7 @@ task_json_lines() {
 
     jq -n \
       --arg id "$id" \
+      --arg callsign "$callsign" \
       --arg kind "$kind" \
       --arg harness "$harness" \
       --arg mode "$mode" \
@@ -584,6 +593,7 @@ task_json_lines() {
       --argjson report_present "$(bool_json "$report_present")" \
       '{
         id:$id,
+        callsign:$callsign,
         kind:$kind,
         harness:($harness // ""),
         mode:($mode // ""),
@@ -615,12 +625,12 @@ task_json_lines() {
         },
         actions:(
           if $kind == "secondmate" then
-            {send:"bin/fm-send.sh fm-\($id) \u0027<request>\u0027",
+            {send:"bin/fm-send.sh \($callsign) \u0027<request>\u0027",
              watch:"read status/doc return channel; do not routinely fm-peek a secondmate for answers",
              return_channel_note:"Secondmate answers come back through status/doc paths after a marked fm-send request."}
           else
-            {watch:"bin/fm-peek.sh fm-\($id)",
-             steer:"bin/fm-send.sh fm-\($id) \u0027<instruction>\u0027",
+            {watch:"bin/fm-peek.sh \($callsign)",
+             steer:"bin/fm-send.sh \($callsign) \u0027<instruction>\u0027",
              return_channel_note:null}
           end)
       }'
@@ -728,11 +738,11 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
          | select($work.current_role != "program")
          | $tasks[]
          | select(.id == $work.id and .current_state.state == "working")
-         | {id,kind,state:.current_state.state,source:.current_state.source,
+         | {id,callsign,kind,state:.current_state.state,source:.current_state.source,
             doing:((.current_state.detail // "") | trunc(120))} ]) as $active_all
     | ($captain_holds_all
        + ([ $tasks[] as $t | ($t.hints.open_decisions // [])[]
-            | {id:$t.id,key,verb,summary:(.summary | trunc(160)),reason:null,source:"status"} ])) as $decisions_all
+            | {id:$t.id,callsign:$t.callsign,key,verb,summary:(.summary | trunc(160)),reason:null,source:"status"} ])) as $decisions_all
     | ([ $queued_all[]
          | select((.unresolved_blocker_ids | length) > 0 or (.hold_reason != null and .hold_kind != null))
          | {id:(.id | trunc(120)),title:(.title | trunc(90)),
@@ -789,7 +799,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
           repo:((.repo // null) | if . == null then null else trunc(120) end),
           kind:((.kind // null) | if . == null then null else trunc(40) end)}][:$queued_n]),
         landed:(if $landed_n == 0 then $landed_all else $landed_all[:$landed_n] end),
-        endpoints:([$tasks[] | {id,state:.current_state.state,source:.current_state.source,
+        endpoints:([$tasks[] | {id,callsign,state:.current_state.state,source:.current_state.source,
           endpoint:(.endpoint + {target:((.endpoint.target // null) | if . == null then null else trunc(240) end)})}][:$child_n]),
         counts:{
           active_children:($active_all | length),
@@ -1389,10 +1399,22 @@ SECONDMATE_CURRENT_JSON=$(secondmate_current_json "$TASKS_JSON") \
   || { echo "fm-fleet-snapshot: registered secondmate aggregation failed" >&2; exit 1; }
 SECONDMATE_LANDED_JSON=$(secondmate_landed_from_current_json "$SECONDMATE_CURRENT_JSON") \
   || { echo "fm-fleet-snapshot: secondmate landed projection failed" >&2; exit 1; }
+FIRSTMATE_NAME_SOURCE=deterministic-fallback
+FIRSTMATE_NAME=$(fm_identity_choose_home_name)
+if [ -f "$FM_IDENTITY_HOME_RECORD" ] && [ ! -L "$FM_IDENTITY_HOME_RECORD" ] \
+   && [ "$(fm_identity_record_value "$FM_IDENTITY_HOME_RECORD" home 2>/dev/null || true)" = "$(fm_identity_home_path)" ]; then
+  persisted_name=$(fm_identity_record_value "$FM_IDENTITY_HOME_RECORD" name 2>/dev/null || true)
+  if fm_identity_validate_name "$persisted_name" >/dev/null 2>&1; then
+    FIRSTMATE_NAME=$persisted_name
+    FIRSTMATE_NAME_SOURCE=persisted
+  fi
+fi
 
 jq -n \
   --arg generated "$SNAPSHOT_NOW" \
   --arg fm_home "$FM_HOME" \
+  --arg firstmate_name "$FIRSTMATE_NAME" \
+  --arg firstmate_name_source "$FIRSTMATE_NAME_SOURCE" \
   --arg fm_root "$FM_ROOT" \
   --arg state "$STATE" \
   --arg data "$DATA" \
@@ -1411,6 +1433,7 @@ jq -n \
      schema:"fm-fleet-snapshot.v1",
      generated:$generated,
      fm_home:$fm_home,
+     firstmate:{name:$firstmate_name,source:$firstmate_name_source},
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
      backlog:$backlog,
      tasks:($tasks | map(. + {backlog:backlog_by_id(.id)})),

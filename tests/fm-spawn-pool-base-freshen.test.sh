@@ -85,7 +85,7 @@ run_spawn() {
 }
 
 test_stale_pool_base_refreshes_before_branching() {
-  local rec id out status current branch_head
+  local rec id out status current branch_head identity callsign first_callsign
   id='pool-current-base-r1'
   rec=$(make_case current-base "$id")
   read_case_record "$rec"
@@ -93,7 +93,17 @@ test_stale_pool_base_refreshes_before_branching() {
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "spawn should refresh a stale pooled worktree"
-  assert_contains "$out" "spawned $id" "spawn did not report success"
+  assert_contains "$out" "($id)" "spawn did not report its callsign beside the task id"
+  identity="$HOME_DIR/data/crew-identities/$id.identity"
+  [ -f "$identity" ] || fail "fresh spawn did not persist its required callsign binding"
+  [ "$(sed -n 's/^task_id=//p' "$identity")" = "$id" ] || fail "spawn identity lost its exact task id"
+  [ "$(sed -n 's/^status=//p' "$identity")" = active ] || fail "spawn identity was not activated before launch"
+  [ "$(sed -n 's/^worktree=//p' "$identity")" = "$(cd "$POOL_DIR" && pwd -P)" ] \
+    || fail "spawn identity did not bind the canonical worktree"
+  callsign=$(sed -n 's/^callsign=//p' "$identity")
+  [ -n "$callsign" ] && assert_contains "$out" "$callsign ($id)" \
+    "spawn result was not names-first"
+  first_callsign=$callsign
   current=$(git -C "$POOL_DIR" rev-parse origin/main)
   branch_head=$(git -C "$POOL_DIR" rev-parse HEAD)
   [ "$branch_head" = "$current" ] || fail "spawn left the pooled worktree on stale history"
@@ -110,6 +120,10 @@ test_stale_pool_base_refreshes_before_branching() {
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "repeating the base refresh should be idempotent"
+  identity="$HOME_DIR/data/crew-identities/$id.identity"
+  callsign=$(sed -n 's/^callsign=//p' "$identity")
+  [ -n "$callsign" ] && [ "$callsign" != "$first_callsign" ] \
+    || fail "two fresh spawns in one home did not receive unique callsigns"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$current" ] \
     || fail "an idempotent repeat moved the pool away from current origin/main"
 
