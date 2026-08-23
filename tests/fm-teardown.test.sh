@@ -549,6 +549,64 @@ run_teardown() {
     "$TEARDOWN" task-x1 "$@"
 }
 
+CODEX_SESSION_ID=01a02b1e-c95e-7a92-9e37-b0862d93e5e0
+
+publish_codex_binding() {  # <case-dir> [state]
+  local case_dir=$1 lifecycle=${2:-parked}
+  env FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" \
+    bash -c '. "$1"; . "$2"; fm_codex_session_publish "$3" task-x1 "$4" "$5" "$6"' \
+      _ "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-codex-session-lib.sh" \
+      "$case_dir/state" "$case_dir/state/task-x1.meta" "$CODEX_SESSION_ID" "$lifecycle"
+}
+
+test_teardown_retires_exact_codex_session_binding() {
+  local case_dir rc
+  case_dir=$(make_case codex-binding-cleanup)
+  write_meta "$case_dir" no-mistakes ship
+  printf 'harness=codex\nspawn_gen=codex-teardown-gen\n' >> "$case_dir/state/task-x1.meta"
+  publish_codex_binding "$case_dir" live \
+    || fail "codex-binding-cleanup: could not publish exact binding fixture"
+  land_shippable_commit "$case_dir"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 0 "$rc" "codex-binding-cleanup: teardown should succeed"
+  assert_absent "$case_dir/state/task-x1.codex-session" \
+    "codex-binding-cleanup: teardown left the task exact-session sidecar"
+  assert_absent "$case_dir/state/codex-sessions/$CODEX_SESSION_ID.owner" \
+    "codex-binding-cleanup: teardown left the global exact-session owner"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "codex-binding-cleanup: teardown left task metadata"
+  pass "teardown retires both exact Codex session records with the task"
+}
+
+test_teardown_refuses_mismatched_codex_binding_before_destructive_steps() {
+  local case_dir rc
+  case_dir=$(make_case codex-binding-refuse)
+  write_meta "$case_dir" no-mistakes ship
+  printf 'harness=codex\nspawn_gen=codex-teardown-gen\n' >> "$case_dir/state/task-x1.meta"
+  publish_codex_binding "$case_dir" uncertain \
+    || fail "codex-binding-refuse: could not publish exact binding fixture"
+  sed 's/^spawn_gen=codex-teardown-gen$/spawn_gen=foreign-gen/' \
+    "$case_dir/state/task-x1.codex-session" > "$case_dir/state/task-x1.codex-session.tmp"
+  mv "$case_dir/state/task-x1.codex-session.tmp" "$case_dir/state/task-x1.codex-session"
+  chmod 600 "$case_dir/state/task-x1.codex-session"
+  land_shippable_commit "$case_dir"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "codex-binding-refuse: mismatched binding should refuse"
+  assert_grep "exact Codex session binding" "$case_dir/stderr" \
+    "codex-binding-refuse: refusal should name the exact-session binding"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "codex-binding-refuse: teardown removed task metadata before binding validation"
+  assert_present "$case_dir/wt" \
+    "codex-binding-refuse: teardown removed the worktree before binding validation"
+  assert_present "$case_dir/state/task-x1.codex-session" \
+    "codex-binding-refuse: teardown removed the mismatched binding it refused"
+  pass "teardown validates an exact Codex binding before endpoint or worktree destruction"
+}
+
 # Build the teardown test's executable search path without lsof, regardless of
 # whether the host installs it in /usr/bin, /usr/sbin, or a package-manager bin.
 make_path_without_lsof() {  # <case-dir>
@@ -2599,6 +2657,8 @@ test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
+test_teardown_retires_exact_codex_session_binding
+test_teardown_refuses_mismatched_codex_binding_before_destructive_steps
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes

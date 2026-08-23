@@ -48,8 +48,33 @@ The clear is refused before anything is sent when the recorded backend cannot de
 Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm-teardown.sh`](../bin/fm-teardown.sh), which owns the landed-work test.
 
 **`resume` is not a verb.**
-It is not deterministic across the verified adapters: codex and grok resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, and kimi have no verified pane-resume contract.
-`relaunch` covers the same need on every adapter, because the brief on disk - not a harness-private session - is the durable instruction.
+Ordinary `relaunch` remains the portable disposable path on every adapter, using the brief and progress note on disk rather than harness-private conversation state.
+Codex ship tasks have one explicit opt-in specialization on the existing verbs:
+
+```sh
+FM_HOME=<home> bin/fm-control.sh <task-id> exit --resumable
+FM_HOME=<home> bin/fm-control.sh <task-id> relaunch --resume --note '<progress note>'
+```
+
+Fresh spawn, ordinary exit, ordinary relaunch, scouts, secondmates, non-Codex harnesses, and harness switching keep their existing disposable behavior.
+
+### Exact Codex session lifecycle
+
+`exit --resumable` takes bounded captures immediately before and after Codex `/quit` and accepts exactly one newly added line in the installed Codex 0.149 shape `To continue this session, run codex resume <canonical-lowercase-UUID>`.
+An absent, stale, repeated, malformed, truncated, embedded, or ambiguous line refuses rather than scanning the terminal for another UUID.
+The parser never accepts a label, uses `--last`, or infers a session from the current directory.
+
+The backend-neutral record owner is `bin/fm-codex-session-lib.sh`.
+It writes byte-identical mode-0600 records at `state/<task-id>.codex-session` and `state/codex-sessions/<session-id>.owner` under a mode-0700 owner directory.
+Each record binds the exact task id, canonical worktree, Codex harness, backend, endpoint, spawn generation, and lifecycle state.
+Herdr records additionally bind the exact named session, workspace id, tab id, and pane id.
+
+The lifecycle states are `parked`, `resuming`, `live`, and `uncertain`.
+The task lifecycle lock serializes the whole exit or relaunch transaction, while the shared exact-session index lock prevents the same session from being claimed concurrently by another task.
+Resume changes `parked` to `resuming` before launch bytes and rebinds it to the replacement `spawn_gen` only after that exact agent is confirmed alive.
+A failure before launch bytes restores `parked`.
+A failure after launch may have begun writes `uncertain`, which is deliberately not resumable and refuses speculative retry.
+Ordinary exit, ordinary relaunch, harness switching, and teardown retire both records safely.
 
 ## Transactional relaunch
 
@@ -66,7 +91,9 @@ It is not deterministic across the verified adapters: codex and grok resume only
    For a `kind=secondmate` task, the home's identity marker must match and its child records must be readable, so a relaunch can never strand child work behind an unreadable home.
    A secondmate's own crewmates run in their own endpoints and outlive its relaunch; the relaunched secondmate reconciles them from its home's durable records at startup.
 3. **Record the note.**
-   A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
+   A ship or scout relaunch requires `--note`.
+   The transaction appends it to the instructions and persists it in the journal.
+   Exact Codex resume additionally sends it as a typed `resume-note` operational prompt to the exact continued conversation.
    A secondmate relaunch does not require one and never rewrites its standing charter.
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
 5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
@@ -76,9 +103,11 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 ### Failure and rollback
 
 - A refusal **before** the agent is stopped leaves the durable record and the instructions byte-identical.
-- A launch failure **after** the agent is stopped restores the prior durable record, keeps the progress note so a later recovery still has it, marks the journal `failed:launching`, and reports plainly that no agent is running and where the work is preserved.
+- An ordinary launch failure **after** the agent is stopped restores the prior durable record, keeps the progress note so a later recovery still has it, marks the journal `failed:launching`, and reports plainly that no agent is running and where the work is preserved.
 - If the launch owner already published the new record but no running agent can be confirmed, the new record is kept: the task is recorded on the new harness with no agent confirmed, which is exactly what recovery reconciles.
   Rewriting it back to the old harness would be a second, worse inaccuracy.
+- An exact Codex resume failure before launch bytes restores the parked binding.
+- An exact Codex resume failure after launch may have begun leaves an `uncertain` binding and refuses another resume attempt.
 
 ## Fail-closed boundaries
 
@@ -98,6 +127,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
+- Exact Codex resume requires a `kind=ship` task recorded on the verified Codex adapter with a non-empty `spawn_gen` and an exact `parked` binding matching the current metadata.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
 
 ## Capability matrix
@@ -118,5 +148,8 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 ## Verification
 
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
-- `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
-- `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.
+- `tests/fm-codex-session.test.sh` - exact banner parsing, identity and spawn-generation mismatches, state transitions, uncertainty, and concurrent cross-task duplicate fencing.
+- `tests/fm-control-relaunch.test.sh` - the relaunch transaction, exact tmux resume launch, identity preservation, harness switching, progress notes, checkpoint refusals, and pre-launch versus uncertain post-launch failure.
+- `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real Herdr binary, including exact recorded endpoint resume after an isolated named-session server restart.
+- `tests/fm-teardown.test.sh` - exact-session preflight and retirement before task metadata removal.
+- `tests/fm-codex-resume-live-e2e.test.sh` - opt-in credentialed exact-session continuity on the installed Codex release in a disposable clone.
