@@ -275,7 +275,8 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   printf 'busy_gen=%s\n' "$gen_before" >> "$dir/home/state/rl1.meta"
   out=$(run_control "$dir" rl1 relaunch --note "stopped mid-refactor"); rc=$?
   expect_code 0 "$rc" "a same-harness relaunch should succeed"$'\n'"$out"
-  assert_contains "$out" "relaunched rl1 harness=claude from=claude" "the outcome should name the transition"
+  assert_contains "$out" "relaunched" "the outcome should name the transition"
+  assert_contains "$out" "(rl1) harness=claude from=claude" "the outcome should retain the task id beside its callsign"
   [ "$(meta_field "$dir" rl1 window)" = "fmses:fm-rl1" ] \
     || fail "the endpoint must be reused, not recreated"
   [ "$(meta_field "$dir" rl1 worktree)" = "$dir/wt" ] \
@@ -293,7 +294,7 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
 }
 
 test_codex_exact_session_resume_and_ordinary_switch_retire_binding() {
-  local dir out rc old_gen new_gen side owner
+  local dir out rc old_gen new_gen side owner callsign
   dir=$(new_case codex-resume rl31)
   add_ship_task "$dir" rl31 codex
   printf 'spawn_gen=spawn-rl31-initial\n' >> "$dir/home/state/rl31.meta"
@@ -309,11 +310,13 @@ test_codex_exact_session_resume_and_ordinary_switch_retire_binding() {
   owner="$dir/home/state/codex-sessions/$CODEX_SESSION_ID.owner"
   [ "$(grep '^state=' "$side")" = state=parked ] || fail "the exact task binding should be parked"
   cmp -s "$side" "$owner" || fail "the task binding and global exact-session owner must be byte-identical"
+  callsign=$(sed -n 's/^callsign=//p' "$dir/home/data/crew-identities/rl31.identity")
+  [ -n "$callsign" ] || fail "resumable task did not retain a persistent callsign"
 
-  out=$(run_control "$dir" rl31 relaunch --resume --note "continue exact session"); rc=$?
-  expect_code 0 "$rc" "exact Codex resume should succeed in the same endpoint"$'\n'"$out"
-  assert_contains "$out" "resumed rl31 session=$CODEX_SESSION_ID" \
-    "the result should name the exact resumed session"
+  out=$(run_control "$dir" "$callsign" relaunch --resume --note "continue exact session"); rc=$?
+  expect_code 0 "$rc" "callsign-selected exact Codex resume should succeed in the same endpoint"$'\n'"$out"
+  assert_contains "$out" "resumed $callsign (rl31) session=$CODEX_SESSION_ID" \
+    "the result should name the callsign, task, and exact resumed session"
   assert_grep "codex resume" "$dir/fake/literal" \
     "the launch should use Codex's exact resume subcommand"
   assert_grep "$CODEX_SESSION_ID" "$dir/fake/literal" \
@@ -1004,7 +1007,7 @@ test_spawn_relaunch_without_a_harness_reuses_the_recorded_one() {
   out=$(run_spawn "$dir" rl21 --relaunch)
   [ "$(meta_field "$dir" rl21 harness)" = claude ] \
     || fail "fm-spawn --relaunch without --harness must reuse the recorded harness, got '$(meta_field "$dir" rl21 harness)'"
-  assert_contains "$out" "spawned rl21 harness=claude" "the launch should report the recorded harness"
+  assert_contains "$out" "(rl21) harness=claude" "the launch should report the callsign, task id, and recorded harness"
   pass "fm-spawn --relaunch: with no explicit harness it reuses the task's recorded one, never the crew default"
 }
 

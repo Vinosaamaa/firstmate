@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Print the tail of a crewmate endpoint (bounded, for cheap diagnosis).
 # Usage: fm-peek.sh <target> [lines=40]
-#   <target> may be an exact task id, a legacy fm-<id> task label resolved
-#   through this home's state/<id>.meta, or an explicit backend target.
+#   <target> may be a persistent callsign, an exact task id, a legacy fm-<id>
+#   task label resolved through this home's state/<id>.meta, or an explicit backend target.
 # A selector whose meta records remote_host= is a remote secondmate: its pane
 # lives on that host, so the capture routes over fm-on.sh to the host-local
 # capture (fm-remote-secondmate-control.sh), clamped to that command's
@@ -17,13 +17,26 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-identity-lib.sh
+. "$SCRIPT_DIR/fm-identity-lib.sh"
 
 "$SCRIPT_DIR/fm-guard.sh" || true
 
 RAW_TARGET=$1
 N=${2:-40}
+TARGET_SELECTOR=$RAW_TARGET
+case "$RAW_TARGET" in
+  *:*) ;;
+  *)
+    if RESOLVED_ID=$(fm_identity_resolve_selector "$STATE" "$RAW_TARGET"); then
+      TARGET_SELECTOR=$RESOLVED_ID
+    else
+      exit 1
+    fi
+    ;;
+esac
 
-REMOTE_META=$(fm_backend_meta_for_selector "$RAW_TARGET" "$STATE" 2>/dev/null || true)
+REMOTE_META=$(fm_backend_meta_for_selector "$TARGET_SELECTOR" "$STATE" 2>/dev/null || true)
 if [ -n "$REMOTE_META" ] && [ -n "$(fm_meta_get "$REMOTE_META" remote_host)" ]; then
   REMOTE_ID=${REMOTE_META##*/}
   REMOTE_ID=${REMOTE_ID%.meta}
@@ -38,9 +51,9 @@ if [ -n "$REMOTE_META" ] && [ -n "$(fm_meta_get "$REMOTE_META" remote_host)" ]; 
   exit 0
 fi
 
-T=$(fm_backend_resolve_selector "$RAW_TARGET" "$STATE")
+T=$(fm_backend_resolve_selector "$TARGET_SELECTOR" "$STATE")
 
-BACKEND=$(fm_backend_of_selector "$RAW_TARGET" "$T" "$STATE")
-EXPECTED_LABEL=$(fm_backend_expected_label_of_selector "$RAW_TARGET" "$STATE")
+BACKEND=$(fm_backend_of_selector "$TARGET_SELECTOR" "$T" "$STATE")
+EXPECTED_LABEL=$(fm_backend_expected_label_of_selector "$TARGET_SELECTOR" "$STATE")
 
 fm_backend_capture "$BACKEND" "$T" "$N" "$EXPECTED_LABEL"

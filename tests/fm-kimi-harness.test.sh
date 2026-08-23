@@ -195,7 +195,7 @@ test_kimi_launch_then_send_is_verified() {
     --model kimi-code/k3 --effort high)
   rc=$?
   expect_code 0 "$rc" "verified kimi launch-then-send should succeed"
-  assert_contains "$out" "spawned $id harness=kimi" "kimi spawn did not report success"
+  assert_contains "$out" "($id) harness=kimi" "kimi spawn did not report success"
 
   launch=$(cat "$CASE_DIR/launch.log")
   [ "$launch" = "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS '$FAKEBIN_DIR/kimi' --model 'kimi-code/k3' --auto" ] \

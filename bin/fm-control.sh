@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # fm-control.sh - the CONTROL PLANE for a firstmate-owned agent: allowlisted
-# lifecycle verbs addressed to an exact task id.
+# lifecycle verbs addressed to an exact task id or persistent callsign.
 #
 # Usage: fm-control.sh <task-id> interrupt
 #        fm-control.sh <task-id> exit [--resumable]
@@ -65,12 +65,10 @@
 # exit/relaunch, fresh spawn, scouts, secondmates, and every other harness keep
 # the disposable brief-plus-note behavior above.
 #
-# Targeting is EXACT: only a bare task id with a state/<id>.meta record in
-# THIS home is accepted, and the record must pass the shared endpoint-identity
-# validation (bin/fm-backend.sh's fm_backend_validate_task_endpoint). A legacy
-# fm-<id> label, an explicit session:window endpoint, and a bare window name
-# are all refused - a lifecycle command delivered to the wrong endpoint is far
-# worse than a loud refusal.
+# Targeting is EXACT: a persistent callsign resolves through the home-owned
+# identity registry to exactly one task id before endpoint validation. A bare
+# task id remains supported. Missing, ambiguous, archived-only, conflicting,
+# explicit session:window, and bare window targets are refused.
 #
 # A remotely placed secondmate is refused by name: its agent runs on another
 # host, so no postcondition this plane verifies could be read for it here.
@@ -131,6 +129,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-identity-lib.sh
+. "$SCRIPT_DIR/fm-identity-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
@@ -179,10 +179,21 @@ VERB=${2:-}
 [ -n "$RAW_ID" ] && [ -n "$VERB" ] || { usage >&2; exit 2; }
 shift 2
 
+case "$RAW_ID" in
+  *:*) die "'$RAW_ID' is an explicit backend endpoint; fm-control accepts a callsign or exact task id only, so a lifecycle command can never land on an endpoint this home does not own" ;;
+  fm-*)
+    if [ -f "$STATE/${RAW_ID#fm-}.meta" ]; then
+      die "'$RAW_ID' is a legacy window label, not a callsign or exact task id; pass the exact task id '${RAW_ID#fm-}' or that task's callsign"
+    fi
+    ;;
+esac
+ID=$(fm_identity_resolve_selector "$STATE" "$RAW_ID") || exit 1
+CALLSIGN=$(fm_identity_display_callsign "$ID")
+
 if ! fm_control_verb_allowed "$VERB"; then
   {
     if [ "$VERB" = resume ]; then
-      echo "error: 'resume' is not a control verb: resuming an exited agent is not deterministic across the verified adapters (codex and grok need a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, and kimi have no verified pane-resume contract). Use 'relaunch', which carries the brief plus a progress note into a fresh agent on any adapter."
+      echo "error: resume resolved $CALLSIGN ($ID), but exact-thread resume is not installed for this task. Use 'relaunch' for a fresh replacement, or the resumable-crewmate command when that opt-in capability owns the recorded harness session."
     else
       echo "error: '$VERB' is not a control verb"
     fi
@@ -262,15 +273,16 @@ case "$NEW_EFFORT" in
   *) die "--effort must be one of low, medium, high, xhigh, max" ;;
 esac
 
-# --- exact task-id resolution ----------------------------------------------
+# --- exact task identity resolution ----------------------------------------
 
-case "$RAW_ID" in
-  *:*) die "'$RAW_ID' is an explicit backend endpoint; fm-control accepts an exact task id only, so a lifecycle command can never land on an endpoint this home does not own" ;;
-esac
-if ! fm_task_id_creation_valid "$RAW_ID"; then
-  die "'$RAW_ID' is not a valid task id"
+if ! fm_task_id_creation_valid "$ID"; then
+  die "resolved task id '$ID' is invalid"
 fi
-ID=$RAW_ID
+if [ ! -f "$(fm_identity_task_record "$ID")" ]; then
+  fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1 >/dev/null \
+    || die "legacy task $ID could not receive a persistent callsign"
+  CALLSIGN=$(fm_identity_display_callsign "$ID")
+fi
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 trap control_cleanup EXIT
 fm_lock_try_acquire "$CONTROL_LOCK" \
@@ -278,14 +290,7 @@ fm_lock_try_acquire "$CONTROL_LOCK" \
 CONTROL_LOCK_HELD=1
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ]; then
-  case "$RAW_ID" in
-    fm-*)
-      if [ -f "$STATE/${RAW_ID#fm-}.meta" ]; then
-        die "'$RAW_ID' is a window label, not a task id; pass the exact task id '${RAW_ID#fm-}'"
-      fi
-      ;;
-  esac
-  die "no task '$ID' in $STATE (fm-control resolves an exact task id only)"
+  die "no active task for $CALLSIGN ($ID) in $STATE"
 fi
 
 # A remotely placed secondmate records its endpoint on ANOTHER host, so every
@@ -1056,9 +1061,9 @@ do_relaunch() {
   RELAUNCH_ACTIVE=0
   rm -f "$RELAUNCH_RESUME_ATTEMPT"
   if [ "$RESUME_RELAUNCH" = 1 ]; then
-    echo "resumed $ID session=$RELAUNCH_RESUME_SESSION harness=codex model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
+    echo "resumed $CALLSIGN ($ID) session=$RELAUNCH_RESUME_SESSION harness=codex model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
   else
-    echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
+    echo "relaunched $CALLSIGN ($ID) harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
   fi
 }
 
@@ -1079,7 +1084,7 @@ case "$VERB" in
       *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle key into an unattributed endpoint" ;;
     esac
     proof=$(do_interrupt)
-    echo "interrupt-delivered $ID harness=$HARNESS backend=$BACKEND verified=$proof"
+    echo "interrupt-delivered $CALLSIGN ($ID) harness=$HARNESS backend=$BACKEND verified=$proof"
     ;;
   exit)
     if [ "$RESUMABLE_EXIT" = 1 ]; then
@@ -1091,7 +1096,7 @@ case "$VERB" in
           || die "task $ID stopped, but its prior Codex session binding could not be retired safely"
       fi
     fi
-    echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
+    echo "$result $CALLSIGN ($ID) harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)
     do_relaunch

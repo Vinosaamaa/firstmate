@@ -16,7 +16,7 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail> · identity: <callsign> (<task-id>)
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
@@ -50,7 +50,8 @@
 #      recorded backend's pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
 #      `resolved` never become current state or detail.
-#   5. Missing meta or torn-down worktree: report unknown · none. If no run is
+#   5. A missing selector refuses before state inspection. A torn-down worktree
+#      with a still-present task record reports unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
 #
@@ -67,6 +68,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-tmux-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-identity-lib.sh
+. "$SCRIPT_DIR/fm-identity-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
@@ -74,8 +77,14 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
-ID=${1:-}
-[ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
+RAW_SELECTOR=${1:-}
+[ -n "$RAW_SELECTOR" ] || { echo "usage: fm-crew-state.sh <task-id-or-callsign>" >&2; exit 2; }
+set +e
+ID=$(fm_identity_resolve_selector "$STATE" "$RAW_SELECTOR")
+IDENTITY_RC=$?
+set -u
+[ "$IDENTITY_RC" -eq 0 ] || exit 1
+CALLSIGN=$(fm_identity_display_callsign "$ID")
 
 META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
@@ -93,6 +102,7 @@ SEP=' · '
 emit() {  # <state> <source> [detail]
   local line="state: $1${SEP}source: $2"
   [ -n "${3:-}" ] && line="$line${SEP}$3"
+  line="$line${SEP}identity: $CALLSIGN ($ID)"
   printf '%s\n' "$line"
   exit 0
 }

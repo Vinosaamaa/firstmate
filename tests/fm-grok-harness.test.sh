@@ -65,7 +65,7 @@ EOF
   out=$(run_grok_spawn "$home" "$proj" "$wt" "$fakebin" "$grok_home" "$id")
   status=$?
   expect_code 0 "$status" "grok spawn should succeed"
-  assert_contains "$out" "spawned $id harness=grok" "grok spawn did not report success"
+  assert_contains "$out" "($id) harness=grok" "grok spawn did not report success"
 
   hook="$grok_home/hooks/fm-turn-end.sh"
   assert_present "$hook" "grok hook script was not installed"

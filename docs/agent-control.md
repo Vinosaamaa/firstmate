@@ -5,7 +5,7 @@ Firstmate talks to a running agent two ways, and they are not the same channel.
 The **data plane** is [`bin/fm-send.sh`](../bin/fm-send.sh): conversational text for the agent to read.
 For a `kind=secondmate` target it always prepends the from-firstmate routing marker, because a secondmate is itself a firstmate and its reply must come back through the status path rather than a chat nobody reads.
 
-The **control plane** is [`bin/fm-control.sh`](../bin/fm-control.sh): allowlisted lifecycle verbs addressed to an exact task id.
+The **control plane** is [`bin/fm-control.sh`](../bin/fm-control.sh): allowlisted lifecycle verbs addressed names-first by persistent callsign or by exact task id.
 
 The split exists because the data plane's marking is exactly right for a message and exactly wrong for a lifecycle command.
 A routing-marked `/quit` arrives as ordinary chat - `[fm-from-firstmate] /quit` - which the agent reasons about instead of executing.
@@ -52,8 +52,8 @@ Ordinary `relaunch` remains the portable disposable path on every adapter, using
 Codex ship tasks have one explicit opt-in specialization on the existing verbs:
 
 ```sh
-FM_HOME=<home> bin/fm-control.sh <task-id> exit --resumable
-FM_HOME=<home> bin/fm-control.sh <task-id> relaunch --resume --note '<progress note>'
+FM_HOME=<home> bin/fm-control.sh <callsign-or-task-id> exit --resumable
+FM_HOME=<home> bin/fm-control.sh <callsign-or-task-id> relaunch --resume --note '<progress note>'
 ```
 
 Fresh spawn, ordinary exit, ordinary relaunch, scouts, secondmates, non-Codex harnesses, and harness switching keep their existing disposable behavior.
@@ -112,8 +112,9 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 ## Fail-closed boundaries
 
 - Targeting is exact.
-  Only a bare task id with a `state/<id>.meta` record in this home is accepted, and that record must pass the shared endpoint-identity validation.
-  A legacy `fm-<id>` window label, an explicit `session:window` endpoint, and a record whose `endpoint_task_id` names another task are all refused.
+  A persistent callsign must resolve through `bin/fm-identity-lib.sh` to exactly one active task record in this home, and an exact task id remains supported.
+  The resolved task record must pass the shared endpoint-identity validation.
+  A legacy `fm-<id>` window label, bare window name, explicit backend target, missing name, ambiguous name, archived-only name, historical name, conflicting record, and a record whose `endpoint_task_id` names another task are all refused.
 - A remotely placed secondmate is refused by name.
   Its agent runs on another host, so none of the postconditions this plane verifies could be read for it here; local endpoint validation would refuse the record regardless, because `window=remote:<id>` can never match a local backend's required shape.
   Drive that lifecycle on its own host and reconcile it through the secondmate recovery path.

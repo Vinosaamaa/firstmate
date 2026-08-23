@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Send one line of literal text to a crewmate endpoint, then Enter.
 # Usage: fm-send.sh <target> [--resolve-key <key>]... <text...>
-#   <target> may be an exact task id, a legacy fm-<id> task label resolved
-#   through this home's state/<id>.meta, or an explicit well-formed backend
-#   target. fm-send refuses unresolved guesses rather than falling back to a
+#   <target> may be a persistent callsign, an exact task id, a legacy fm-<id>
+#   task label resolved through this home's state/<id>.meta, or an explicit
+#   well-formed backend target. fm-send refuses unresolved guesses rather than falling back to a
 #   tmux window search, because a "successful" send to the wrong endpoint is
 #   worse than a loud failure.
 # Special keys instead of text: fm-send.sh <target> --key Enter
@@ -131,6 +131,8 @@ fi
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-identity-lib.sh
+. "$SCRIPT_DIR/fm-identity-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-marker-lib.sh
@@ -222,7 +224,7 @@ fm_send_count_colons() {  # <string>
 }
 
 fm_send_resolve_target() {  # <raw-target>
-  local raw=$1 meta pane_meta target backend assumed colons id session hint
+  local raw=$1 meta pane_meta target backend assumed colons id resolved_id session hint identity_rc identity_record identity_status
 
   RESOLVED_TARGET=""
   TARGET_BACKEND=""
@@ -234,6 +236,33 @@ fm_send_resolve_target() {  # <raw-target>
   RESOLUTION_TRIED=""
 
   meta=$(fm_backend_meta_for_selector "$raw" "$STATE" 2>/dev/null || true)
+  [ -z "$meta" ] || id=$(fm_send_id_from_meta "$meta")
+  case "$raw" in
+    *:*) ;; # Preserve the verified explicit-endpoint compatibility path below.
+    *)
+      if [ -z "$meta" ]; then
+        set +e
+        id=$(fm_identity_resolve_selector "$STATE" "$raw")
+        identity_rc=$?
+        set -e
+        case "$identity_rc" in
+          0) meta="$STATE/$id.meta" ;;
+          *) return 1 ;;
+        esac
+      else
+        resolved_id=$(fm_identity_resolve_selector "$STATE" "$raw") || return 1
+        [ "$resolved_id" = "$id" ] || {
+          fm_identity_error "selector '$raw' resolved to task $resolved_id but backend metadata selected task $id; refusing to guess"
+          return 1
+        }
+      fi
+      identity_record=$(fm_identity_task_record "$id")
+      identity_status=$(fm_identity_record_value "$identity_record" status 2>/dev/null || true)
+      if [ "$identity_status" != active ]; then
+        fm_identity_ensure_task_from_meta "$meta" "$id" legacy >/dev/null || return 1
+      fi
+      ;;
+  esac
   if [ -n "$meta" ]; then
     if [ -n "$(fm_meta_get "$meta" remote_host)" ]; then
       id=$(fm_send_id_from_meta "$meta")
@@ -242,7 +271,7 @@ fm_send_resolve_target() {  # <raw-target>
       TARGET_META=$meta
       TARGET_HARNESS=$(fm_meta_get "$meta" harness)
       EXPECTED_LABEL="fm-$id"
-      TARGET_SELECTOR=1
+      case "$raw" in *:*) ;; *) TARGET_SELECTOR=1 ;; esac
       TARGET_REMOTE_ID=$id
       RESOLUTION_TRIED="meta=$meta; placement=remote"
       return 0
@@ -258,8 +287,8 @@ fm_send_resolve_target() {  # <raw-target>
     TARGET_BACKEND=$backend
     TARGET_META=$meta
     TARGET_HARNESS=$(fm_meta_get "$meta" harness)
-    EXPECTED_LABEL=$(fm_backend_expected_label_of_selector "$raw" "$STATE")
-    TARGET_SELECTOR=1
+    EXPECTED_LABEL="fm-$id"
+    case "$raw" in *:*) ;; *) TARGET_SELECTOR=1 ;; esac
     return 0
   fi
 

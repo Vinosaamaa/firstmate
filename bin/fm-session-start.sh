@@ -325,6 +325,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-identity-lib.sh
+. "$SCRIPT_DIR/fm-identity-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-public-followup-lib.sh
@@ -643,6 +645,9 @@ REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
 print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
 
 if [ "$READ_ONLY" -eq 0 ]; then
+  if ! fm_identity_migrate_home; then
+    printf 'IDENTITY: persistent home/task name migration failed; names-first routing will refuse unsafe records until repaired.\n' >&2
+  fi
   if [ "$REEMIT" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi
@@ -787,13 +792,23 @@ stage fleet-state
 section "FLEET STATE"
 print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
 
+subsection "Firstmate identity"
+if [ -f "$FM_IDENTITY_HOME_RECORD" ] && [ ! -L "$FM_IDENTITY_HOME_RECORD" ]; then
+  firstmate_name=$(fm_identity_record_value "$FM_IDENTITY_HOME_RECORD" name 2>/dev/null || true)
+  [ -n "$firstmate_name" ] && printf '%s (Firstmate home)\n' "$firstmate_name" \
+    || printf 'UNSAFE - malformed persistent Firstmate identity record\n'
+else
+  printf '%s (deterministic fallback; read-only session did not persist it)\n' "$(fm_identity_choose_home_name)"
+fi
+
 subsection "Work under way (state/*.meta)"
 META_FOUND=0
 for meta in "$STATE"/*.meta; do
   [ -f "$meta" ] || continue
   META_FOUND=1
   id=$(basename "$meta" .meta)
-  printf '\n--- %s ---\n' "$id"
+  callsign=$(fm_identity_display_callsign "$id")
+  printf '\n--- %s (%s) ---\n' "$callsign" "$id"
   cat "$meta"
 
   window=$(fm_meta_get "$meta" window)
@@ -825,7 +840,8 @@ for status in "$STATE"/*.status; do
   id=$(basename "$status" .status)
   [ -f "$STATE/$id.meta" ] && continue
   ORPHAN_STATUS_FOUND=1
-  printf '\n--- %s ---\n' "$id"
+  callsign=$(fm_identity_display_callsign "$id")
+  printf '\n--- %s (%s) ---\n' "$callsign" "$id"
   print_status_tail "$status"
 done
 [ "$ORPHAN_STATUS_FOUND" -eq 1 ] || printf '(none)\n'

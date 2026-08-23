@@ -1535,7 +1535,7 @@ SH
   if [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" != "fm/task-x1" ]; then
     : > "$release"; fail "herdr-orphan-refusal: the contended refusal dropped the task branch before refusing"
   fi
-  if grep -q "teardown task-x1 complete" "$case_dir/stdout"; then
+  if grep -q "(task-x1) complete" "$case_dir/stdout"; then
     : > "$release"; fail "herdr-orphan-refusal: refusal still reported cleanup complete"
   fi
   if grep -q "^pane close" "$log"; then
@@ -1551,7 +1551,7 @@ SH
   [ -s "$thlog" ] || fail "herdr-orphan-refusal: the successful retry never returned the isolated copy"
   [ ! -e "$case_dir/state/task-x1.meta" ] || fail "herdr-orphan-refusal: the successful retry left the metadata behind"
   [ ! -e "$case_dir/state/task-x1.status" ] || fail "herdr-orphan-refusal: the successful retry left the status record behind"
-  grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
+  grep -q "(task-x1) complete" "$case_dir/stdout2" \
     || fail "herdr-orphan-refusal: the successful retry did not report completion"
   pass "herdr flat teardown refuses before returning the isolated copy under lock contention and the retry completes cleanly"
 }

@@ -18,7 +18,7 @@
 #   (g) no run + semantic idle falls to the status-log verb       -> status-log
 #   (h) dead pane: no run -> unknown/none; with a run -> run-step (not the shell)
 #   (i) kind=scout skips the run lookup                           -> pane/status-log
-#   (j) torn-down worktree / missing meta                         -> unknown/none
+#   (j) torn-down worktree -> unknown/none; missing task -> refusal
 #   (k) crew_is_provably_working end-to-end over the REAL helper (not a canned
 #       fake fm-crew-state.sh verdict): cross-branch attribution via the runs
 #       list -> absorbed; genuinely no run anywhere + idle pane -> surfaced.
@@ -1254,11 +1254,10 @@ test_missing_meta() {
   local d; d=$(new_case nometa)
   make_fakebin "$d" >/dev/null
   local out rc
-  out=$(run_crew_state "$d" ghost-z); rc=$?
-  expect_code 0 "$rc" "missing meta exits 0"
-  assert_contains "$out" "state: unknown" "missing meta -> unknown"
-  assert_contains "$out" "source: none" "missing meta -> none source"
-  pass "missing meta is handled gracefully"
+  out=$(run_crew_state "$d" ghost-z 2>&1); rc=$?
+  expect_code 1 "$rc" "missing task refuses"
+  assert_contains "$out" "no callsign or task 'ghost-z' exists" "missing task refusal is explicit"
+  pass "missing task id or callsign refuses instead of guessing"
 }
 
 # (k) crew_is_provably_working end-to-end over the REAL fm-crew-state.sh (not a
