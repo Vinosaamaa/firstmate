@@ -32,7 +32,7 @@
 # Compatibility contract: a task's meta may omit `backend=`; every reader here
 # treats that as `tmux` (fm_backend_of_meta), and fm-spawn.sh does not write
 # `backend=tmux` for a default-backend task, so existing and newly spawned
-# default-path metas stay byte-identical. Only a task spawned on a non-tmux
+# default-path metas retain that backend-marker compatibility. Only a task spawned on a non-tmux
 # spawn-capable backend, currently experimental herdr, zellij, orca, or cmux,
 # carries an explicit `backend=` line.
 #
@@ -349,15 +349,39 @@ fm_backend_of_meta() {  # <meta-file>
   printf '%s' "${v:-tmux}"
 }
 
-fm_backend_target_of_meta() {  # <meta-file>
-  local meta=$1 backend terminal window
+fm_backend_recorded_target_of_meta() {  # <meta-file>
+  local meta=$1 backend terminal window pane
   backend=$(fm_backend_of_meta "$meta")
   if [ "$backend" = orca ]; then
     terminal=$(fm_meta_get "$meta" terminal)
     [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
   fi
+  if [ "$backend" = tmux ]; then
+    pane=$(fm_meta_get "$meta" tmux_pane_id)
+    [ -n "$pane" ] && { printf '%s' "$pane"; return 0; }
+  fi
   window=$(fm_meta_get "$meta" window)
   [ -n "$window" ] && printf '%s' "$window"
+}
+
+# fm_backend_target_of_meta: resolve a task's live route from durable metadata.
+# Backends own the proof for their stable endpoint identity.
+# New tmux records fail closed unless the saved pane/tty/process tuple still
+# matches; legacy tmux records and other backends preserve their existing route.
+fm_backend_target_of_meta() {  # <meta-file>
+  local meta=$1 backend target pane
+  backend=$(fm_backend_of_meta "$meta")
+  target=$(fm_backend_recorded_target_of_meta "$meta")
+  [ -n "$target" ] || return 0
+  if [ "$backend" = tmux ]; then
+    pane=$(fm_meta_get "$meta" tmux_pane_id)
+    if [ -n "$pane" ]; then
+      fm_backend_source tmux || return 1
+      fm_backend_tmux_verify_task_identity "$meta"
+      return
+    fi
+  fi
+  printf '%s' "$target"
 }
 
 # fm_backend_validate_task_endpoint: validate a task cleanup record entirely
@@ -386,6 +410,7 @@ fm_backend_endpoint_atom_valid() {  # <value>
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
   local session pane recorded_session workspace tab terminal worktree_id surface
+  local pane_count tty pid start comm argv0 digits identity_status_count identity_status
   FM_BACKEND_VALIDATED_BACKEND=
   FM_BACKEND_VALIDATED_TARGET=
   [ -f "$meta" ] && [ ! -L "$meta" ] || {
@@ -443,11 +468,52 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
 
   case "$backend" in
     tmux)
-      session=${window%%:*}
-      pane=${window#*:}
-      if [ "$pane" = "$window" ] || [ "$pane" != "fm-$id" ] \
-        || [ -z "$session" ]; then
-        echo "REFUSED: tmux endpoint '$window' is malformed or does not belong to task $id; preserving task state." >&2
+      pane_count=$(grep -c '^tmux_pane_id=' "$meta" 2>/dev/null || true)
+      if [ "$pane_count" -eq 0 ]; then
+        session=${window%%:*}
+        pane=${window#*:}
+        if [ "$pane" = "$window" ] || [ "$pane" != "fm-$id" ] \
+          || [ -z "$session" ]; then
+          echo "REFUSED: tmux endpoint '$window' is malformed or does not belong to task $id; preserving task state." >&2
+          return 1
+        fi
+      elif [ "$pane_count" -eq 1 ]; then
+        [ "$binding" = "$id" ] || {
+          echo "REFUSED: stable tmux endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+          return 1
+        }
+        pane=$(fm_backend_meta_exact_value "$meta" tmux_pane_id) || pane=
+        tty=$(fm_backend_meta_exact_value "$meta" tmux_pane_tty) || tty=
+        identity_status_count=$(grep -c '^tmux_identity_status=' "$meta" 2>/dev/null || true)
+        case "$identity_status_count" in
+          0) identity_status=legacy ;;
+          1) identity_status=$(fm_backend_meta_exact_value "$meta" tmux_identity_status) || identity_status= ;;
+          *) identity_status= ;;
+        esac
+        pid=$(fm_backend_meta_exact_value "$meta" tmux_agent_pid) || pid=
+        start=$(fm_backend_meta_exact_value "$meta" tmux_agent_start) || start=
+        comm=$(fm_backend_meta_exact_value "$meta" tmux_agent_comm) || comm=
+        argv0=$(fm_backend_meta_exact_value "$meta" tmux_agent_argv0) || argv0=
+        digits=${pane#%}
+        case "$digits" in ''|*[!0-9]*) digits= ;; esac
+        case "$tty" in /dev/*) ;; *) digits= ;; esac
+        case "$identity_status" in
+          bound|legacy) case "$pid" in ''|*[!0-9]*) digits= ;; esac ;;
+          failed)
+            [ -z "$pid$start$comm$argv0" ] || digits=
+            ;;
+          *) digits= ;;
+        esac
+        case "$start$comm$argv0$tty" in *$'\n'*|*$'\r'*|*$'\t'*) digits= ;; esac
+        if [ -z "$digits" ] || [ "${pane#%}" = "$pane" ] || [ "$window" != "$pane" ] \
+          || { [ "$identity_status" != failed ] \
+            && { [ -z "$start" ] || [ -z "$comm" ] || [ -z "$argv0" ]; }; }; then
+          echo "REFUSED: stable tmux endpoint metadata for task $id is missing, ambiguous, malformed, or inconsistent; preserving task state." >&2
+          return 1
+        fi
+        window=$pane
+      else
+        echo "REFUSED: stable tmux endpoint metadata for task $id has an ambiguous pane binding; preserving task state." >&2
         return 1
       fi
       ;;
@@ -532,12 +598,16 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
 }
 
 fm_backend_meta_for_window() {  # <target> <state-dir>
-  local target=$1 state=$2 meta window terminal
+  local target=$1 state=$2 meta window terminal route
   for meta in "$state"/*.meta; do
     [ -e "$meta" ] || continue
     window=$(fm_meta_get "$meta" window)
     terminal=$(fm_meta_get "$meta" terminal)
-    { [ -n "$window" ] && [ "$window" = "$target" ]; } || { [ -n "$terminal" ] && [ "$terminal" = "$target" ]; } || continue
+    route=$(fm_backend_recorded_target_of_meta "$meta")
+    { [ -n "$window" ] && [ "$window" = "$target" ]; } \
+      || { [ -n "$terminal" ] && [ "$terminal" = "$target" ]; } \
+      || { [ -n "$route" ] && [ "$route" = "$target" ]; } \
+      || continue
     printf '%s' "$meta"
     return 0
   done
@@ -639,11 +709,10 @@ fm_backend_source() {  # <name>
 #   target with ":"   used as-is (the escape hatch for a window/pane outside
 #                      this firstmate home) - backend-independent, a literal string.
 #   exact task id      routed through <state-dir>/<id>.meta's backend target
-#                      (`window=` normally, `terminal=` for Orca) -
-#                      backend-independent, a stored value, NOT re-verified
-#                      against a live backend inventory (matches today's
-#                      behavior: tmux window names can be trusted from meta
-#                      without a live re-check).
+#                      (`tmux_pane_id=` for bound tmux tasks, `terminal=` for
+#                      Orca, `window=` otherwise).
+#                      Backend-specific stable identity proof runs before a
+#                      bound route is returned.
 #   "fm-<id>"          legacy task window label fallback routed through
 #                      <state-dir>/<id>.meta when no exact
 #                      <state-dir>/fm-<id>.meta exists.
