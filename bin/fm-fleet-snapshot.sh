@@ -42,6 +42,9 @@
 #     endpoint.exists is the cheap backend endpoint-presence read.
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
+#   identities[]: one read-only id/callsign/status projection for every structured
+#     backlog, live-task, or report id. Persisted records win; legacy unnamed ids
+#     receive the same deterministic migration-compatible display fallback.
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
@@ -1383,6 +1386,24 @@ scout_report_lines() {
     | jq -s 'sort_by(.id)'
 }
 
+identity_projection_json() {  # <backlog-json> <tasks-json> <reports-json>
+  local id record callsign status
+  jq -nr --argjson backlog "$1" --argjson tasks "$2" --argjson reports "$3" '
+    ([ $backlog.records[]? | select(.structured == true) | .id ]
+     + [ $tasks[]?.id ] + [ $reports[]?.id ]) | unique[]' \
+  | while IFS= read -r id; do
+      fm_identity_task_id_valid "$id" || continue
+      record=$(fm_identity_task_record "$id")
+      callsign=$(fm_identity_display_callsign "$id")
+      status=legacy
+      if fm_identity_record_core_valid "$record" "$id" 2>/dev/null; then
+        status=$(fm_identity_record_value "$record" status)
+      fi
+      jq -n --arg id "$id" --arg callsign "$callsign" --arg status "$status" \
+        '{id:$id,callsign:$callsign,status:$status}'
+    done | jq -s 'sort_by(.id)'
+}
+
 BACKLOG_JSON=$(backlog_json) || { echo "fm-fleet-snapshot: backlog read failed" >&2; exit 1; }
 TASKS_JSON=$(task_json_lines) || { echo "fm-fleet-snapshot: task snapshot failed" >&2; exit 1; }
 
@@ -1393,6 +1414,8 @@ if [ "$OUTPUT_MODE" = secondmate-home-summary ]; then
 fi
 
 SCOUT_REPORTS_JSON=$(scout_report_lines)
+IDENTITIES_JSON=$(identity_projection_json "$BACKLOG_JSON" "$TASKS_JSON" "$SCOUT_REPORTS_JSON") \
+  || { echo "fm-fleet-snapshot: identity projection failed" >&2; exit 1; }
 MAIN_INVENTORY_JSON=$(main_inventory_json "$BACKLOG_JSON" "$TASKS_JSON") \
   || { echo "fm-fleet-snapshot: main inventory summary failed" >&2; exit 1; }
 SECONDMATE_CURRENT_JSON=$(secondmate_current_json "$TASKS_JSON") \
@@ -1422,6 +1445,7 @@ jq -n \
   --arg projects "$PROJECTS" \
   --argjson backlog "$BACKLOG_JSON" \
   --argjson tasks "$TASKS_JSON" \
+  --argjson identities "$IDENTITIES_JSON" \
   --argjson main_inventory "$MAIN_INVENTORY_JSON" \
   --argjson scout_reports "$SCOUT_REPORTS_JSON" \
   --argjson secondmate_current "$SECONDMATE_CURRENT_JSON" \
@@ -1436,6 +1460,7 @@ jq -n \
      firstmate:{name:$firstmate_name,source:$firstmate_name_source},
      roots:{fm_root:$fm_root,state:$state,data:$data,config:$config,projects:$projects},
      backlog:$backlog,
+     identities:$identities,
      tasks:($tasks | map(. + {backlog:backlog_by_id(.id)})),
      main_inventory:$main_inventory,
      scout_reports:($scout_reports | map(. + {kind:report_kind(.id)})),

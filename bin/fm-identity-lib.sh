@@ -203,8 +203,8 @@ fm_identity_all_names() {
   done
 }
 
-fm_identity_name_matches_any() {  # <name> [record-to-ignore]
-  local wanted ignore=${2:-} record value line id_path id
+fm_identity_human_name_matches_any() {  # <name> [record-to-ignore]
+  local wanted ignore=${2:-} record value line
   wanted=$(fm_identity_fold "$1")
   if [ "$FM_IDENTITY_HOME_RECORD" != "$ignore" ] && [ -f "$FM_IDENTITY_HOME_RECORD" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -220,6 +220,13 @@ fm_identity_name_matches_any() {  # <name> [record-to-ignore]
       [ "$(fm_identity_fold "$value")" = "$wanted" ] && return 0
     done < "$record"
   done
+  return 1
+}
+
+fm_identity_name_matches_any() {  # <name> [record-to-ignore]
+  local wanted ignore=${2:-} id_path id
+  wanted=$(fm_identity_fold "$1")
+  fm_identity_human_name_matches_any "$1" "$ignore" && return 0
   for id_path in "$FM_IDENTITY_DIR"/*.identity "$FM_IDENTITY_STATE"/*.meta; do
     [ -e "$id_path" ] || continue
     id=${id_path##*/}
@@ -262,7 +269,10 @@ fm_identity_choose_fresh_callsign() {  # <task-id>
     offset=$((offset + 1))
   done
   candidate=$(fm_identity_pool_at "$FM_IDENTITY_CALLSIGN_POOL" "$start") || return 1
-  while fm_identity_name_matches_any "$candidate-$suffix"; do suffix=$((suffix + 1)); done
+  while [ "$(fm_identity_fold "$candidate-$suffix")" = "$(fm_identity_fold "$id")" ] \
+     || fm_identity_name_matches_any "$candidate-$suffix"; do
+    suffix=$((suffix + 1))
+  done
   printf '%s-%s' "$candidate" "$suffix"
 }
 
@@ -408,6 +418,24 @@ fm_identity_harness_session_of_meta() {
   printf '%s' "$found"
 }
 
+fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
+  local meta=$1 id=$2 remote binding backend target
+  remote=$(fm_identity_meta_value "$meta" remote_host)
+  if [ -n "$remote" ]; then
+    binding=$(fm_identity_meta_value "$meta" endpoint_task_id)
+    backend=$(fm_identity_meta_value "$meta" remote_backend)
+    target=$(fm_identity_meta_value "$meta" remote_target)
+    [ "$binding" = "$id" ] && [ -n "$backend" ] && [ -n "$target" ] \
+      && fm_identity_value_safe "$backend" && fm_identity_value_safe "$target"
+    return
+  fi
+  declare -F fm_backend_validate_task_endpoint >/dev/null 2>&1 || {
+    fm_identity_error "shared backend endpoint validation is unavailable for task $id"
+    return 1
+  }
+  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1
+}
+
 fm_identity_write_task_record() {  # <record> <id> <callsign> <status> <meta|empty> <created> [retired-file]
   local record=$1 id=$2 callsign=$3 status=$4 meta=$5 created=$6 retired_file=${7:-}
   local home worktree= backend= endpoint= endpoint_session= harness_session= spawn_gen= value tmp
@@ -415,6 +443,7 @@ fm_identity_write_task_record() {  # <record> <id> <callsign> <status> <meta|emp
   home=$(fm_identity_home_path) || return 1
   if [ -n "$meta" ]; then
     [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+    fm_identity_validate_meta_endpoint_ownership "$meta" "$id" || return 1
     worktree=$(fm_identity_worktree_of_meta "$meta") || return 1
     backend=$(fm_identity_backend_of_meta "$meta")
     endpoint=$(fm_identity_target_of_meta "$meta")
@@ -492,6 +521,11 @@ fm_identity_reserve_fresh_task() {  # <task-id>
     fi
     return 1
   fi
+  if fm_identity_human_name_matches_any "$id"; then
+    fm_identity_lock_release
+    fm_identity_error "task id '$id' collides with an active or historical human name in this Firstmate home"
+    return 1
+  fi
   callsign=$(fm_identity_choose_fresh_callsign "$id") || { fm_identity_lock_release; return 1; }
   created=$(fm_identity_now)
   fm_identity_write_task_record "$record" "$id" "$callsign" provisioning "" "$created" \
@@ -567,6 +601,11 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
       fi
     fi
   else
+    if fm_identity_human_name_matches_any "$id"; then
+      fm_identity_lock_release
+      fm_identity_error "task id '$id' collides with an active or historical human name in this Firstmate home"
+      return 1
+    fi
     if [ "$legacy" = 1 ]; then
       callsign=$(fm_identity_legacy_callsign "$id") || { fm_identity_lock_release; return 1; }
       if fm_identity_name_matches_any "$callsign"; then
@@ -672,6 +711,7 @@ fm_identity_validate_active_binding() {  # <record> <meta> <task-id>
   local record=$1 meta=$2 id=$3 status worktree backend endpoint endpoint_session harness_session spawn_gen
   local expected_worktree expected_backend expected_endpoint expected_endpoint_session expected_harness_session expected_spawn_gen
   fm_identity_record_core_valid "$record" "$id" || return 1
+  fm_identity_validate_meta_endpoint_ownership "$meta" "$id" || return 1
   status=$(fm_identity_record_value "$record" status)
   [ "$status" = active ] || return 1
   worktree=$(fm_identity_record_value "$record" worktree 2>/dev/null || true)
@@ -836,7 +876,18 @@ fm_identity_rename_task() {  # <state-dir> <selector> <new-callsign>
     return 1
   }
   old=$(fm_identity_record_value "$record" callsign)
+  if [ "$old" = "$new" ]; then
+    fm_identity_lock_release
+    printf '%s\t%s' "$old" "$id"
+    return 0
+  fi
   if [ "$(fm_identity_fold "$old")" = "$(fm_identity_fold "$new")" ]; then
+    created=$(fm_identity_record_value "$record" created_at 2>/dev/null || fm_identity_now)
+    retired=$(mktemp "${TMPDIR:-/tmp}/fm-identity-retired.XXXXXXXX") || { fm_identity_lock_release; return 1; }
+    grep '^retired_callsign=' "$record" > "$retired" 2>/dev/null || true
+    fm_identity_write_task_record "$record" "$id" "$new" active "$meta" "$created" "$retired" \
+      || { rm -f "$retired"; fm_identity_lock_release; return 1; }
+    rm -f "$retired"
     fm_identity_lock_release
     printf '%s\t%s' "$new" "$id"
     return 0

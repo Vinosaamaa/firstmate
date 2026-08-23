@@ -287,7 +287,7 @@ fm_send_resolve_target() {  # <raw-target>
     TARGET_BACKEND=$backend
     TARGET_META=$meta
     TARGET_HARNESS=$(fm_meta_get "$meta" harness)
-    EXPECTED_LABEL=$(fm_backend_expected_label_of_selector "$raw" "$STATE")
+    EXPECTED_LABEL="fm-$id"
     case "$raw" in *:*) ;; *) TARGET_SELECTOR=1 ;; esac
     return 0
   fi

@@ -880,6 +880,28 @@ EOF
   pass "repeated snapshots keep the same current landed baseline and ignore prior reports"
 }
 
+test_callsigns_accompany_live_results_and_history() {
+  local home fakebin json done_callsign
+  home=$(make_home callsign-projection); write_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-name.sh" rename ship-task Mariner >/dev/null \
+    || fail "could not seed live ship callsign"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-name.sh" rename scout-x Pathfinder >/dev/null \
+    || fail "could not seed scout callsign"
+  done_callsign=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" bash -c '
+    . "$FM_ROOT_OVERRIDE/bin/fm-backend.sh"
+    . "$FM_ROOT_OVERRIDE/bin/fm-identity-lib.sh"
+    fm_identity_ensure_legacy_archive done-a
+  ')
+  json=$(run "$home" "$fakebin" --json --all-landed --all-reports)
+  printf '%s' "$json" | jq -e --arg done "$done_callsign" '
+    (.in_flight | any(.[]; .id == "ship-task" and .callsign == "Mariner"))
+      and (.reports | any(.[]; .id == "scout-x" and .callsign == "Pathfinder"))
+      and (.landed | any(.[]; .id == "done-a" and .callsign == $done))
+  ' >/dev/null || fail "Bearings omitted callsigns from live work, results, or landed history: $json"
+  pass "Bearings shows callsigns beside task ids in live work, results, and history"
+}
+
 test_default_is_bounded_and_local_only() {
   local home fakebin toon json
   home=$(make_home bounded); write_fixture "$home"
@@ -1953,6 +1975,7 @@ test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit
 test_registry_unavailability_and_bounds_are_explicit
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
+test_callsigns_accompany_live_results_and_history
 test_default_is_bounded_and_local_only
 test_toon_json_parity
 test_landed_includes_secondmate_home_merges

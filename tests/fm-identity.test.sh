@@ -51,8 +51,12 @@ write_herdr_meta() { # <id> <session:pane> [thread]
     printf 'worktree=%s\n' "$WT"
     printf 'project=%s\n' "$TMP_ROOT/project"
     printf 'harness=codex\nkind=ship\nbackend=herdr\n'
+    printf 'endpoint_task_id=%s\n' "$id"
     printf 'spawn_gen=gen-%s\n' "$id"
     printf 'herdr_session=%s\n' "${target%%:*}"
+    printf 'herdr_workspace_id=workspace-%s\n' "$id"
+    printf 'herdr_tab_id=tab-%s\n' "$id"
+    printf 'herdr_pane_id=%s\n' "${target#*:}"
     [ -z "$thread" ] || printf 'codex_session_id=%s\n' "$thread"
   } > "$STATE/$id.meta"
 }
@@ -113,18 +117,28 @@ fi
 if FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" rename "$CALL_B" task-a >/dev/null 2>&1; then
   fail "rename collided with an existing task id"
 fi
+if fm_identity_reserve_fresh_task "$(printf '%s' "$EXPLICIT_A" | tr '[:upper:]' '[:lower:]')" >/dev/null 2>&1; then
+  fail "fresh task id collided with an existing callsign"
+fi
 if FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" resolve "$CALL_A" >/dev/null 2>&1; then
   fail "retired callsign remained routable after rename"
 fi
 pass "explicit rename validates active, task-id, reserved, and historical collisions"
 
+CASE_ONLY=$(printf '%s' "$EXPLICIT_A" | tr '[:upper:]' '[:lower:]')
+NAME_OUT=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" rename "$EXPLICIT_A" "$CASE_ONLY")
+[ "$NAME_OUT" = "$CASE_ONLY (task-a)" ] || fail "case-only rename did not report the persisted spelling"
+[ "$(field "$REC_A" callsign)" = "$CASE_ONLY" ] || fail "case-only rename was not persisted"
+EXPLICIT_A=$CASE_ONLY
+pass "case-only rename persists the requested spelling"
+
 # Process/pane loss does not mutate identity. A replacement endpoint and exact
 # thread resume update the binding in place without changing the callsign.
 [ "$(fm_identity_resolve_selector "$STATE" "$EXPLICIT_A")" = task-a ] || fail "callsign vanished after simulated process exit"
-write_tmux_meta task-a fm-home:fm-task-a-restarted thread-a
+write_tmux_meta task-a fm-home-restarted:fm-task-a thread-a
 [ "$(fm_identity_ensure_task_from_meta "$STATE/task-a.meta" task-a rebind)" = "$EXPLICIT_A" ] \
   || fail "tmux restart changed the callsign"
-[ "$(field "$REC_A" endpoint)" = fm-home:fm-task-a-restarted ] || fail "relaunch endpoint was not updated"
+[ "$(field "$REC_A" endpoint)" = fm-home-restarted:fm-task-a ] || fail "relaunch endpoint was not updated"
 [ "$(field "$REC_A" harness_session_id)" = thread-a ] || fail "exact-thread resume id was not preserved"
 write_herdr_meta task-b fm-lab:pane-b-restarted thread-b
 [ "$(fm_identity_ensure_task_from_meta "$STATE/task-b.meta" task-b rebind)" = "$CALL_B" ] \
@@ -153,7 +167,7 @@ chmod +x "$FAKEBIN/tmux"
 FM_IDENTITY_SEND_LOG="$SEND_LOG" PATH="$FAKEBIN:$PATH" \
   FM_SEND_SETTLE=0 FM_HOME="$HOME_DIR" "$ROOT/bin/fm-send.sh" "$EXPLICIT_A" "status please" >/dev/null \
   || fail "names-first direct follow-up routing failed"
-grep -q 'fm-home:fm-task-a-restarted' "$SEND_LOG" || fail "callsign follow-up did not route to the exact bound endpoint"
+grep -q 'fm-home-restarted:fm-task-a' "$SEND_LOG" || fail "callsign follow-up did not route to the exact bound endpoint"
 pass "names-first follow-up routes to exactly one task"
 
 # Conflicting session identities fail closed without replacing the good record.
@@ -165,8 +179,16 @@ if fm_identity_ensure_task_from_meta "$STATE/task-a.meta" task-a rebind >/dev/nu
   fail "conflicting exact-thread identifiers were accepted"
 fi
 cmp -s "$REC_A" "$TMP_ROOT/record-before-conflict" || fail "failed relaunch rewrote the prior identity"
-write_tmux_meta task-a fm-home:fm-task-a-restarted thread-a
+write_tmux_meta task-a fm-home-restarted:fm-task-a thread-a
 pass "conflicting or unsafe relaunch identity refuses without rebinding"
+
+write_tmux_meta unsafe-legacy fm-home:fm-other
+if fm_identity_ensure_task_from_meta "$STATE/unsafe-legacy.meta" unsafe-legacy legacy >/dev/null 2>&1; then
+  fail "legacy identity activation accepted another task's tmux endpoint"
+fi
+[ ! -e "$(fm_identity_task_record unsafe-legacy)" ] || fail "unsafe legacy activation published an identity record"
+rm -f "$STATE/unsafe-legacy.meta"
+pass "legacy activation validates endpoint ownership before publishing a callsign"
 
 fm_identity_archive_task "$STATE/task-b.meta" task-b >/dev/null
 rm -f "$STATE/task-b.meta"
@@ -182,7 +204,7 @@ pass "cleanup retains history and active/historical callsigns never silently reb
 
 # Migration gives complete legacy tasks active fallback bindings, incomplete
 # records provisioning fallbacks, and status-only history archived tombstones.
-write_tmux_meta legacy-live fm-legacy-live
+write_tmux_meta legacy-live fm-home:fm-legacy-live
 printf 'kind=ship\n' > "$STATE/legacy-incomplete.meta"
 printf 'done: old task\n' > "$STATE/legacy-gone.status"
 fm_identity_migrate_home
