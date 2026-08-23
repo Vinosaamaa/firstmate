@@ -183,6 +183,9 @@
 # success line and state/<id>.meta omit them.
 # Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
 # consumers can distinguish a replacement worker that reuses the same task id.
+# A tmux spawn additionally records its stable pane id and tty before launch,
+# then atomically binds the launched foreground agent's pid, process start time,
+# executable identity, and argv[0] before reporting success.
 # The two --resume-* flags are an internal fm-control transaction surface, not
 # a standalone recovery shortcut. They require --relaunch, a Codex ship task,
 # the parent's transaction token and attempt journal, and a valid resuming
@@ -1974,11 +1977,17 @@ case "$BACKEND" in
     # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
     # id and pins the window name (automatic-rename/allow-rename off) so a captain's
     # non-default tmux config cannot rename the window away from fm-<id> once
-    # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
-    # rename-critical worktree-detection steps below; the persisted window= handle
-    # stays $T (the name form), which is safe now that rename is disabled.
+    # treehouse cd's into the worktree. Resolve the pane id immediately: it stays
+    # stable across both window renames and pane moves, unlike every window handle.
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
-    WT_TARGET="$WID"
+    fm_backend_tmux_pane_identity "$WID" || {
+      echo "error: tmux did not return a stable pane identity for $W" >&2
+      exit 1
+    }
+    TMUX_PANE_ID=$FM_BACKEND_TMUX_PANE_ID
+    TMUX_PANE_TTY=$FM_BACKEND_TMUX_PANE_TTY
+    T=$TMUX_PANE_ID
+    WT_TARGET=$T
     ;;
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
@@ -2198,13 +2207,21 @@ EOF
     ;;
 esac
 fi
+if [ "$BACKEND" = tmux ] && [ "$RELAUNCH" -eq 1 ]; then
+  fm_backend_tmux_pane_identity "$T" || {
+    echo "error: task $ID's saved tmux pane is missing; refusing to relaunch into a guessed endpoint" >&2
+    exit 1
+  }
+  TMUX_PANE_ID=$FM_BACKEND_TMUX_PANE_ID
+  TMUX_PANE_TTY=$FM_BACKEND_TMUX_PANE_TTY
+fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
     propagate_inheritable_config "$CONFIG" "$PROJ_ABS/config" \
     || echo "warning: secondmate $ID trace-context inheritance failed for $PROJ_ABS" >&2
 fi
 # #134 robustness: only tmux needs a worktree-detection target distinct from $T -
-# its rename-safe stable window id, set as WT_TARGET=$WID in the tmux branch above.
+# its stable pane id, set as WT_TARGET=$TMUX_PANE_ID in the tmux branch above.
 # Every other backend addresses its pane/surface by the id already in $T, so default
 # WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
 # worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
@@ -2731,6 +2748,7 @@ META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
+TMUX_IDENTITY_META_KEYS="tmux_pane_id tmux_pane_tty tmux_identity_status tmux_agent_pid tmux_agent_start tmux_agent_comm tmux_agent_argv0"
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
@@ -2739,9 +2757,11 @@ if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_PATH=$SPAWN_META_TMP
 fi
 preserve_relaunch_meta() {
-  awk -F= '
+  awk -F= -v tmux_keys="$TMUX_IDENTITY_META_KEYS" '
     BEGIN {
       split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      for (i in keys) owned[keys[i]] = 1
+      split(tmux_keys, keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2763,9 +2783,14 @@ preserve_relaunch_meta() {
   echo "spawn_gen=$SPAWN_GEN"
   # Default-off writes no traceparent= line.
   # backend= is written only for a non-default (non-tmux) backend, so the
-  # default path's meta stays byte-identical (absent backend= means tmux;
+  # The default path still omits backend= (absent means tmux under
   # data/fm-backend-design-d7's P1 compatibility contract).
   [ "$BACKEND" = tmux ] || echo "backend=$BACKEND"
+  if [ "$BACKEND" = tmux ]; then
+    echo "tmux_pane_id=$TMUX_PANE_ID"
+    echo "tmux_pane_tty=$TMUX_PANE_TTY"
+    echo "tmux_identity_status=pending"
+  fi
   if [ "$BACKEND" = herdr ]; then
     echo "herdr_session=$HERDR_SES"
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
@@ -2904,6 +2929,92 @@ spawn_record_traceparent() {
   return "$status"
 }
 
+spawn_bind_tmux_identity() {
+  local meta="$STATE/$ID.meta" tmp status=0 attempt=0
+  while [ "$attempt" -lt 120 ]; do
+    if fm_backend_tmux_discover_agent_identity "$T" \
+       && [ "$FM_BACKEND_TMUX_PANE_ID" = "$TMUX_PANE_ID" ] \
+       && [ "$FM_BACKEND_TMUX_PANE_TTY" = "$TMUX_PANE_TTY" ]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge 120 ] || sleep 0.25
+  done
+  [ "$attempt" -lt 120 ] || return 1
+
+  SPAWN_META_LOCK=$(fm_meta_lock_path "$meta") || return 1
+  fm_lock_acquire_wait "$SPAWN_META_LOCK"
+  SPAWN_META_LOCK_HELD=1
+  tmp="$STATE/.$ID.meta.tmux-identity.${BASHPID:-$$}"
+  SPAWN_META_TMP=$tmp
+  if [ ! -f "$meta" ] || [ ! -w "$meta" ] \
+     || ! spawn_without_tmux_identity "$meta" > "$tmp" \
+     || ! {
+       printf 'tmux_pane_id=%s\n' "$TMUX_PANE_ID"
+       printf 'tmux_pane_tty=%s\n' "$TMUX_PANE_TTY"
+       printf 'tmux_identity_status=bound\n'
+       printf 'tmux_agent_pid=%s\n' "$FM_BACKEND_TMUX_AGENT_PID"
+       printf 'tmux_agent_start=%s\n' "$FM_BACKEND_TMUX_AGENT_START"
+       printf 'tmux_agent_comm=%s\n' "$FM_BACKEND_TMUX_AGENT_COMM"
+       printf 'tmux_agent_argv0=%s\n' "$FM_BACKEND_TMUX_AGENT_ARGV0"
+     } >> "$tmp" \
+     || ! mv -f "$tmp" "$meta"; then
+    status=1
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  SPAWN_META_TMP=
+  fm_lock_release "$SPAWN_META_LOCK" || status=1
+  SPAWN_META_LOCK_HELD=0
+  return "$status"
+}
+
+spawn_without_tmux_identity() {  # <meta-file>
+  awk -F= -v keys="$TMUX_IDENTITY_META_KEYS" '
+    BEGIN {
+      split(keys, fields, " ")
+      for (i in fields) owned[fields[i]] = 1
+    }
+    !($1 in owned)
+  ' "$1"
+}
+
+spawn_quarantine_tmux_identity() {
+  local meta="$STATE/$ID.meta" tmp status=0 observed
+  SPAWN_META_LOCK=$(fm_meta_lock_path "$meta") || status=1
+  if [ "$status" -eq 0 ]; then
+    fm_lock_acquire_wait "$SPAWN_META_LOCK"
+    SPAWN_META_LOCK_HELD=1
+    tmp="$STATE/.$ID.meta.tmux-identity-failed.${BASHPID:-$$}"
+    SPAWN_META_TMP=$tmp
+    if [ ! -f "$meta" ] || [ ! -w "$meta" ] \
+       || ! spawn_without_tmux_identity "$meta" > "$tmp" \
+       || ! {
+         printf 'tmux_pane_id=%s\n' "$TMUX_PANE_ID"
+         printf 'tmux_pane_tty=%s\n' "$TMUX_PANE_TTY"
+         printf 'tmux_identity_status=failed\n'
+       } >> "$tmp" \
+       || ! mv -f "$tmp" "$meta"; then
+      status=1
+      rm -f "$tmp" 2>/dev/null || true
+    fi
+    SPAWN_META_TMP=
+    fm_lock_release "$SPAWN_META_LOCK" || status=1
+    SPAWN_META_LOCK_HELD=0
+  fi
+  observed=$(tmux display-message -p -t "$TMUX_PANE_ID" '#{pane_id}|#{pane_tty}' 2>/dev/null) || observed=
+  if [ -n "$observed" ]; then
+    if [ "$observed" = "$TMUX_PANE_ID|$TMUX_PANE_TTY" ]; then
+      fm_backend_tmux_kill "$TMUX_PANE_ID" || status=1
+      if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -Fqx "$TMUX_PANE_ID"; then
+        status=1
+      fi
+    else
+      status=1
+    fi
+  fi
+  return "$status"
+}
+
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
@@ -2944,6 +3055,16 @@ spawn_send_key "$T" Enter
 if [ "$RESUME_CODEX_SET" -eq 1 ]; then
   spawn_codex_resume_attempt_write submitted || {
     echo "error: exact Codex resume was submitted but its attempt journal could not be advanced" >&2
+    exit 1
+  }
+fi
+if [ "$BACKEND" = tmux ]; then
+  spawn_bind_tmux_identity || {
+    if spawn_quarantine_tmux_identity; then
+      echo "error: task $ID launched, but its stable tmux pane/process identity could not be bound; the exact pane was retired and fail-closed metadata was retained" >&2
+    else
+      echo "error: task $ID launched, but its stable tmux pane/process identity could not be bound; cleanup is incomplete and fail-closed metadata was retained" >&2
+    fi
     exit 1
   }
 fi

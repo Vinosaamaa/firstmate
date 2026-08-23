@@ -36,6 +36,132 @@ fm_backend_tmux_resolve_bare_selector() {  # <name>
     || { echo "error: no window named $name" >&2; return 1; }
 }
 
+# fm_backend_tmux_pane_identity: resolve one exact pane directly and publish its
+# stable pane id and tty for spawn-time metadata binding.
+fm_backend_tmux_pane_identity() {  # <target>
+  local target=$1 observed pane tty
+  FM_BACKEND_TMUX_PANE_ID=
+  FM_BACKEND_TMUX_PANE_TTY=
+  observed=$(tmux display-message -p -t "$target" '#{pane_id}|#{pane_tty}' 2>/dev/null) || return 1
+  pane=${observed%%|*}
+  tty=${observed#*|}
+  case "$pane:$tty" in
+    %*[0-9]:/dev/*) ;;
+    *) return 1 ;;
+  esac
+  # shellcheck disable=SC2034 # Output globals are consumed by fm-spawn.sh.
+  FM_BACKEND_TMUX_PANE_ID=$pane
+  # shellcheck disable=SC2034 # Output globals are consumed by fm-spawn.sh.
+  FM_BACKEND_TMUX_PANE_TTY=$tty
+}
+
+# fm_backend_tmux_process_sample: sample one saved pid directly.
+# The fixed-width lstart fields make the result portable across macOS and Linux.
+fm_backend_tmux_process_sample() {  # <pid>
+  local wanted=$1 out pid start tty comm args argv0
+  FM_BACKEND_TMUX_AGENT_PID=
+  FM_BACKEND_TMUX_AGENT_START=
+  FM_BACKEND_TMUX_AGENT_TTY=
+  FM_BACKEND_TMUX_AGENT_COMM=
+  FM_BACKEND_TMUX_AGENT_ARGV0=
+  case "$wanted" in ''|*[!0-9]*) return 1 ;; esac
+  out=$(LC_ALL=C ps -p "$wanted" -o pid=,lstart=,tty=,comm= 2>/dev/null) || return 1
+  out=${out#"${out%%[![:space:]]*}"}
+  set -- $out
+  [ "$#" -ge 8 ] || return 1
+  pid=$1
+  start="$2 $3 $4 $5 $6"
+  tty=$7
+  shift 7
+  comm=$*
+  [ "$pid" = "$wanted" ] && [ -n "$tty" ] && [ -n "$comm" ] || return 1
+  args=$(LC_ALL=C ps -p "$wanted" -o args= 2>/dev/null) || return 1
+  args=${args#"${args%%[![:space:]]*}"}
+  if [ -r "/proc/$wanted/cmdline" ]; then
+    argv0=$(LC_ALL=C tr '\0' '\n' < "/proc/$wanted/cmdline" 2>/dev/null | sed -n '1p')
+  else
+    case "$args" in
+      "$comm"|"$comm "*) argv0=$comm ;;
+      *) argv0=${args%%[[:space:]]*} ;;
+    esac
+  fi
+  [ -n "$argv0" ] || return 1
+  # shellcheck disable=SC2034 # Output globals are consumed by binding/verification callers.
+  FM_BACKEND_TMUX_AGENT_PID=$pid
+  # shellcheck disable=SC2034 # Output globals are consumed by binding/verification callers.
+  FM_BACKEND_TMUX_AGENT_START=$start
+  # shellcheck disable=SC2034 # Output globals are consumed by binding/verification callers.
+  FM_BACKEND_TMUX_AGENT_TTY=$tty
+  # shellcheck disable=SC2034 # Output globals are consumed by binding/verification callers.
+  FM_BACKEND_TMUX_AGENT_COMM=$comm
+  # shellcheck disable=SC2034 # Output globals are consumed by binding/verification callers.
+  FM_BACKEND_TMUX_AGENT_ARGV0=$argv0
+}
+
+# fm_backend_tmux_discover_agent_identity: one spawn-time process discovery on
+# the exact pane tty.
+# Normal routing never calls this function: it queries only the saved pid.
+fm_backend_tmux_discover_agent_identity() {  # <target>
+  local target=$1 rows pid pgid tpgid comm argv0 candidate=
+  fm_backend_tmux_pane_identity "$target" || return 1
+  rows=$(LC_ALL=C ps -t "${FM_BACKEND_TMUX_PANE_TTY#/dev/}" -o pid=,pgid=,tpgid= 2>/dev/null) || return 1
+  while read -r pid pgid tpgid; do
+    [ -n "$pid" ] && [ "$pgid" = "$tpgid" ] || continue
+    fm_backend_tmux_process_sample "$pid" || continue
+    comm=$FM_BACKEND_TMUX_AGENT_COMM
+    argv0=$FM_BACKEND_TMUX_AGENT_ARGV0
+    if [ "$(fm_backend_tmux_classify_process_name "$comm" "$argv0")" != agent ]; then
+      continue
+    fi
+    candidate=$pid
+    [ "$pid" = "$pgid" ] && return 0
+  done <<EOF
+$rows
+EOF
+  [ -n "$candidate" ] || return 1
+  fm_backend_tmux_process_sample "$candidate"
+}
+
+# fm_backend_tmux_verify_task_identity: constant-time live-route verification.
+# It resolves the saved pane id directly, then the saved pid directly; it never
+# scans tmux windows, discovers another process, mutates metadata, or launches.
+fm_backend_tmux_verify_task_identity() {  # <meta-file>
+  local meta=$1 id pane tty pid start comm argv0 observed saved_ps_tty
+  id=$(fm_meta_get "$meta" endpoint_task_id)
+  pane=$(fm_backend_meta_exact_value "$meta" tmux_pane_id) || pane=
+  tty=$(fm_backend_meta_exact_value "$meta" tmux_pane_tty) || tty=
+  pid=$(fm_backend_meta_exact_value "$meta" tmux_agent_pid) || pid=
+  start=$(fm_backend_meta_exact_value "$meta" tmux_agent_start) || start=
+  comm=$(fm_backend_meta_exact_value "$meta" tmux_agent_comm) || comm=
+  argv0=$(fm_backend_meta_exact_value "$meta" tmux_agent_argv0) || argv0=
+  case "$pane:$tty:$pid" in
+    %*[0-9]:/dev/*:[0-9]*) ;;
+    *) echo "error: tmux live-route identity for task ${id:-unknown} is incomplete or malformed" >&2; return 1 ;;
+  esac
+  observed=$(tmux display-message -p -t "$pane" '#{pane_id}|#{pane_tty}' 2>/dev/null) || {
+    echo "error: tmux live-route identity for task ${id:-unknown} is lost: saved pane $pane is missing" >&2
+    return 1
+  }
+  [ "$observed" = "$pane|$tty" ] || {
+    echo "error: tmux live-route identity for task ${id:-unknown} is lost: pane tty changed" >&2
+    return 1
+  }
+  fm_backend_tmux_process_sample "$pid" || {
+    echo "error: tmux live-route identity for task ${id:-unknown} is lost: saved agent pid $pid is missing" >&2
+    return 1
+  }
+  saved_ps_tty=${tty#/dev/}
+  if [ "$FM_BACKEND_TMUX_AGENT_START" != "$start" ] \
+     || [ "$FM_BACKEND_TMUX_AGENT_TTY" != "$saved_ps_tty" ] \
+     || [ "$FM_BACKEND_TMUX_AGENT_COMM" != "$comm" ] \
+     || [ "$FM_BACKEND_TMUX_AGENT_ARGV0" != "$argv0" ] \
+     || [ "$(fm_backend_tmux_classify_process_name "$FM_BACKEND_TMUX_AGENT_COMM" "$FM_BACKEND_TMUX_AGENT_ARGV0")" != agent ]; then
+    echo "error: tmux live-route identity for task ${id:-unknown} is lost: saved pid/start-time/tty/agent identity no longer matches" >&2
+    return 1
+  fi
+  printf '%s' "$pane"
+}
+
 # fm_backend_tmux_capture: bounded plain-text pane capture. Mirrors
 # fm-peek.sh's and fm-watch.sh's `tmux capture-pane -p -t "$T" -S -"$N"`.
 fm_backend_tmux_capture() {  # <target> <lines>
@@ -126,6 +252,13 @@ fm_backend_tmux_send_literal() {  # <target> <text>
 # tmux can never interpret an empty target as the caller's current window.
 fm_backend_tmux_kill() {  # <target>
   local target=${1:-} session window
+  case "$target" in
+    %*[0-9])
+      [ "$(tmux display-message -p -t "$target" '#{pane_id}' 2>/dev/null || true)" = "$target" ] || return 0
+      tmux kill-pane -t "$target" 2>/dev/null || true
+      return 0
+      ;;
+  esac
   case "$target" in
     *:*)
       session=${target%%:*}
@@ -263,34 +396,43 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # authoritative for the negative verdicts, since it is the only source that can
 # distinguish a truly idle pane from a rewritten process title.
 fm_backend_tmux_agent_state() {  # <target>
-  local target=$1 comm session window windows inventory_status
+  local target=$1 comm session window windows inventory_status observed
   local foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
   case "$target" in
+    %*[0-9])
+      observed=$(tmux display-message -p -t "$target" '#{pane_id}' 2>/dev/null) || {
+        printf 'missing'
+        return 0
+      }
+      [ "$observed" = "$target" ] || { printf 'unreadable'; return 0; }
+      ;;
     *:*:*|'':*|*:'') printf 'unreadable'; return 0 ;;
     *:*) ;;
     *) printf 'unreadable'; return 0 ;;
   esac
-  session=${target%%:*}
-  window=${target#*:}
-  if windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>&1); then
-    inventory_status=0
-  else
-    inventory_status=$?
-  fi
-  if [ "$inventory_status" -ne 0 ]; then
-    case "$windows" in
-      *"can't find session:"*|*"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
-        printf 'missing'
-        ;;
-      *)
-        printf 'unreadable'
-        ;;
-    esac
-    return 0
-  fi
-  if ! printf '%s\n' "$windows" | grep -Fqx "$window"; then
-    printf 'missing'
-    return 0
+  if [ "${target#%}" = "$target" ]; then
+    session=${target%%:*}
+    window=${target#*:}
+    if windows=$(LC_ALL=C tmux list-windows -t "$session" -F '#{window_name}' 2>&1); then
+      inventory_status=0
+    else
+      inventory_status=$?
+    fi
+    if [ "$inventory_status" -ne 0 ]; then
+      case "$windows" in
+        *"can't find session:"*|*"no server running on "*|*"error connecting to "*" (No such file or directory)"|*"error connecting to "*" (Connection refused)")
+          printf 'missing'
+          ;;
+        *)
+          printf 'unreadable'
+          ;;
+      esac
+      return 0
+    fi
+    if ! printf '%s\n' "$windows" | grep -Fqx "$window"; then
+      printf 'missing'
+      return 0
+    fi
   fi
 
   foreground=$(fm_backend_tmux_foreground_comms "$target")

@@ -358,6 +358,14 @@ require_state_verified_backend() {  # <verb>
   die "task $ID runs on the $BACKEND backend, which has no recovery-grade agent-state classifier, so '$1' cannot prove the agent actually stopped; refusing rather than reporting an unproven transition as done"
 }
 
+require_current_task_route() {
+  local verified
+  verified=$(fm_backend_target_of_meta "$META") \
+    || die "task $ID's saved live-route identity no longer matches its endpoint; refusing lifecycle delivery"
+  [ -n "$verified" ] && [ "$verified" = "$T" ] \
+    || die "task $ID's saved live-route identity no longer matches its endpoint; refusing lifecycle delivery"
+}
+
 # send_interrupt_keys: deliver the harness's interrupt key the verified number
 # of times, then the composer-clear key when the adapter needs one. Refuses
 # before sending anything when the backend cannot deliver either key, because
@@ -365,6 +373,7 @@ require_state_verified_backend() {  # <verb>
 # composer would make the next submitted line concatenate onto it.
 send_interrupt_keys() {
   local key repeat clear i=0
+  require_current_task_route
   key=$(fm_control_interrupt_key "$HARNESS")
   repeat=$(fm_control_interrupt_repeat "$HARNESS")
   clear=$(fm_control_interrupt_clear_key "$HARNESS")
@@ -468,6 +477,7 @@ do_exit() {
     missing) die "task $ID's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action" ;;
     *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint" ;;
   esac
+  require_current_task_route
   # A busy agent is interrupted first before the exit command is submitted.
   case "$(busy_verdict)" in
     busy*)
@@ -485,6 +495,7 @@ do_exit() {
       esac
       ;;
   esac
+  require_current_task_route
   cmd=$(fm_control_exit_command "$HARNESS")
   # The submit verdict is NOT the postcondition here: a successful exit command
   # destroys the composer the verdict is read from, so a post-exit read can
@@ -529,6 +540,7 @@ do_resumable_codex_exit() {
   fi
   [ "$state" = alive ] \
     || die "task $ID's endpoint reads '$state'; refusing to capture a Codex session from an unattributed endpoint"
+  require_current_task_route
   before="$STATE/.$ID.codex-exit-before.${BASHPID:-$$}"
   after="$STATE/.$ID.codex-exit-after.${BASHPID:-$$}"
   rm -f "$before" "$after"

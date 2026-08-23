@@ -27,6 +27,8 @@ wait_for_capture_text() {  # <target> <text> [samples]
 }
 
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
+CAT_BIN=$(command -v cat) || { echo "skip: cat not found"; exit 0; }
+SLEEP_BIN=$(command -v sleep) || { echo "skip: sleep not found"; exit 0; }
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-backend-smoke-$$"
 SHIM_DIR=
@@ -168,6 +170,170 @@ state=$(fm_backend_agent_state tmux "$TARGET")
 # Best-effort contract: killing an already-gone window must not error.
 fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead target must stay best-effort (never fail)"
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
+
+# --- stable task route across a pane move and window rename -----------------
+
+# This credential-free Codex stand-in is a real foreground process whose
+# executable argv[0] is codex and whose stdin remains readable for routing.
+CODEX_INSTALL="$SHIM_DIR/codex install"
+mkdir -p "$CODEX_INSTALL"
+ln -s "$CAT_BIN" "$CODEX_INSTALL/codex"
+CODEX_BIN="$CODEX_INSTALL/codex"
+mkdir -p "$SHIM_DIR/state"
+tmux new-window -d -t "$SESSION:" -n route-old -- "$CODEX_BIN" - \
+  || fail "could not create the stable-route Codex stand-in"
+ROUTE_TARGET="$SESSION:route-old"
+for _ in $(seq 1 100); do
+  fm_backend_tmux_discover_agent_identity "$ROUTE_TARGET" 2>/dev/null && break
+  sleep 0.1
+done
+[ -n "${FM_BACKEND_TMUX_AGENT_PID:-}" ] \
+  || fail "spawn-time discovery did not bind the Codex stand-in"
+ROUTE_PANE=$FM_BACKEND_TMUX_PANE_ID
+ROUTE_TTY=$FM_BACKEND_TMUX_PANE_TTY
+ROUTE_PID=$FM_BACKEND_TMUX_AGENT_PID
+ROUTE_START=$FM_BACKEND_TMUX_AGENT_START
+ROUTE_COMM=$FM_BACKEND_TMUX_AGENT_COMM
+ROUTE_ARGV0=$FM_BACKEND_TMUX_AGENT_ARGV0
+[ "$ROUTE_ARGV0" = "$CODEX_BIN" ] \
+  || fail "spawn-time discovery read whitespace-containing Codex comm/argv[0] as '$ROUTE_COMM' / '$ROUTE_ARGV0', expected '$CODEX_BIN'"
+ROUTE_META="$SHIM_DIR/state/route.meta"
+cat > "$ROUTE_META" <<EOF
+window=$ROUTE_PANE
+endpoint_task_id=route
+worktree=$SHIM_DIR
+project=$SHIM_DIR
+harness=codex
+kind=ship
+tmux_pane_id=$ROUTE_PANE
+tmux_pane_tty=$ROUTE_TTY
+tmux_identity_status=bound
+tmux_agent_pid=$ROUTE_PID
+tmux_agent_start=$ROUTE_START
+tmux_agent_comm=$ROUTE_COMM
+tmux_agent_argv0=$ROUTE_ARGV0
+EOF
+fm_backend_validate_task_endpoint "$ROUTE_META" route \
+  || fail "stable tmux task metadata did not pass structural validation"
+[ "$FM_BACKEND_VALIDATED_TARGET" = "$ROUTE_PANE" ] \
+  || fail "stable tmux endpoint validation returned '$FM_BACKEND_VALIDATED_TARGET', expected '$ROUTE_PANE'"
+
+tmux send-keys -t "$ROUTE_PANE" -l stable-route-token
+tmux send-keys -t "$ROUTE_PANE" Enter
+wait_for_capture_text "$ROUTE_PANE" stable-route-token \
+  || fail "Codex stand-in did not receive its pre-move routing token"
+tmux new-window -d -t "$SESSION:" -n route-destination -- "$SLEEP_BIN" 900 \
+  || fail "could not create the pane-move destination"
+tmux move-pane -d -s "$ROUTE_PANE" -t "$SESSION:route-destination" \
+  || fail "could not move the live Codex pane"
+tmux rename-window -t "$ROUTE_PANE" route-renamed \
+  || fail "could not rename the moved pane's window"
+
+[ "$(tmux display-message -p -t "$ROUTE_PANE" '#{pane_id}|#{pane_tty}')" = "$ROUTE_PANE|$ROUTE_TTY" ] \
+  || fail "pane id or tty changed across move/rename"
+fm_backend_tmux_process_sample "$ROUTE_PID" \
+  || fail "saved Codex pid disappeared across move/rename"
+[ "$FM_BACKEND_TMUX_AGENT_START" = "$ROUTE_START" ] \
+  && [ "$FM_BACKEND_TMUX_AGENT_TTY" = "${ROUTE_TTY#/dev/}" ] \
+  && [ "$FM_BACKEND_TMUX_AGENT_COMM" = "$ROUTE_COMM" ] \
+  && [ "$FM_BACKEND_TMUX_AGENT_ARGV0" = "$ROUTE_ARGV0" ] \
+  || fail "Codex pid/start-time/tty/executable identity changed across move/rename"
+[ "$(fm_backend_target_of_meta "$ROUTE_META")" = "$ROUTE_PANE" ] \
+  || fail "metadata routing did not resolve the moved pane directly"
+peek=$(FM_HOME="$SHIM_DIR" FM_STATE_OVERRIDE="$SHIM_DIR/state" FM_ROOT_OVERRIDE="$ROOT" \
+  "$ROOT/bin/fm-peek.sh" route 40 2>/dev/null) \
+  || fail "task-addressed fm-peek failed after pane move and window rename"
+case "$peek" in
+  *stable-route-token*) ;;
+  *) fail "task-addressed fm-peek did not capture the moved pane" ;;
+esac
+[ "$(fm_backend_tmux_process_sample "$ROUTE_PID" && printf '%s' "$FM_BACKEND_TMUX_AGENT_PID")" = "$ROUTE_PID" ] \
+  || fail "routing created or rebound to a different worker process"
+pass "real tmux: stable pane/task identity survives pane move and window rename without discovery or relaunch"
+
+# Replacing the process in the same pane must fail before fm-send reaches the
+# transport, even when the replacement still has a Codex-shaped executable.
+sleep 1.1
+tmux respawn-pane -k -t "$ROUTE_PANE" "$CODEX_BIN" - \
+  || fail "could not replace the Codex stand-in in the same pane"
+REPLACEMENT_PID=
+for _ in $(seq 1 100); do
+  if fm_backend_tmux_discover_agent_identity "$ROUTE_PANE" 2>/dev/null \
+     && [ "$FM_BACKEND_TMUX_AGENT_PID" != "$ROUTE_PID" ]; then
+    REPLACEMENT_PID=$FM_BACKEND_TMUX_AGENT_PID
+    REPLACEMENT_START=$FM_BACKEND_TMUX_AGENT_START
+    REPLACEMENT_COMM=$FM_BACKEND_TMUX_AGENT_COMM
+    REPLACEMENT_ARGV0=$FM_BACKEND_TMUX_AGENT_ARGV0
+    break
+  fi
+  sleep 0.1
+done
+[ -n "$REPLACEMENT_PID" ] || fail "replacement process did not start in the saved pane"
+before_meta=$(cksum "$ROUTE_META")
+if FM_HOME="$SHIM_DIR" FM_STATE_OVERRIDE="$SHIM_DIR/state" FM_ROOT_OVERRIDE="$ROOT" \
+  "$ROOT/bin/fm-send.sh" route --key Enter >/dev/null 2>&1; then
+  fail "fm-send accepted a replacement process in the saved pane"
+fi
+[ "$(cksum "$ROUTE_META")" = "$before_meta" ] \
+  || fail "replacement refusal mutated task metadata"
+pass "real tmux: replacement process in the same pane is refused before fm-send"
+
+# Simulate PID reuse independently by binding the replacement's current pid and
+# executable identity with the prior process's start time.
+REUSE_META="$SHIM_DIR/state/reuse.meta"
+cat > "$REUSE_META" <<EOF
+window=$ROUTE_PANE
+endpoint_task_id=reuse
+worktree=$SHIM_DIR
+project=$SHIM_DIR
+harness=codex
+kind=ship
+tmux_pane_id=$ROUTE_PANE
+tmux_pane_tty=$ROUTE_TTY
+tmux_identity_status=bound
+tmux_agent_pid=$REPLACEMENT_PID
+tmux_agent_start=$ROUTE_START
+tmux_agent_comm=$REPLACEMENT_COMM
+tmux_agent_argv0=$REPLACEMENT_ARGV0
+EOF
+[ "$REPLACEMENT_START" != "$ROUTE_START" ] \
+  || fail "PID-reuse simulation is vacuous because the two process start times match"
+before_meta=$(cksum "$REUSE_META")
+if FM_HOME="$SHIM_DIR" FM_STATE_OVERRIDE="$SHIM_DIR/state" FM_ROOT_OVERRIDE="$ROOT" \
+  "$ROOT/bin/fm-send.sh" reuse --key Enter >/dev/null 2>&1; then
+  fail "fm-send accepted a reused pid with a different process start time"
+fi
+[ "$(cksum "$REUSE_META")" = "$before_meta" ] \
+  || fail "PID-reuse refusal mutated task metadata"
+pass "real tmux: reused pid with a different start time is refused before fm-send"
+
+# A post-launch binding failure retains an explicit cleanup-only record.
+# It is never routable, but guarded teardown can still retire the exact pane.
+FAILED_META="$SHIM_DIR/state/failed.meta"
+cat > "$FAILED_META" <<EOF
+window=$ROUTE_PANE
+endpoint_task_id=failed
+worktree=$SHIM_DIR
+project=$SHIM_DIR
+harness=codex
+kind=ship
+tmux_pane_id=$ROUTE_PANE
+tmux_pane_tty=$ROUTE_TTY
+tmux_identity_status=failed
+EOF
+fm_backend_validate_task_endpoint "$FAILED_META" failed \
+  || fail "failed identity metadata was not retained as a guarded cleanup record"
+[ "$FM_BACKEND_VALIDATED_TARGET" = "$ROUTE_PANE" ] \
+  || fail "failed identity cleanup record did not retain the exact pane id"
+if fm_backend_target_of_meta "$FAILED_META" >/dev/null 2>&1; then
+  fail "failed identity metadata became routable"
+fi
+fm_backend_kill "$FM_BACKEND_VALIDATED_BACKEND" "$FM_BACKEND_VALIDATED_TARGET" \
+  || fail "failed identity cleanup record could not retire its exact pane"
+if tmux list-panes -a -F '#{pane_id}' | grep -Fqx "$ROUTE_PANE"; then
+  fail "failed identity cleanup left the exact pane live"
+fi
+pass "real tmux: failed post-launch identity records stay unroutable and retain exact cleanup authority"
 
 cleanup_all
 trap - EXIT
