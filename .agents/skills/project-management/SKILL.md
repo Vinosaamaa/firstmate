@@ -2,8 +2,8 @@
 name: project-management
 description: >-
   Agent-only procedure for Firstmate project management.
-  Use before adding, creating, removing, or initializing a project.
-  Cloning or registering a project is add intake and uses the same trigger.
+  Use before adding, creating, removing, or initializing a project or registering, resolving, or unregistering an external workspace.
+  Cloning or registering a project or workspace is add intake and uses the same trigger.
   Owns project add, create, clone, remove, initialization, registry, delivery-mode, autonomy, and outward-consent decisions.
 user-invocable: false
 metadata:
@@ -12,8 +12,8 @@ metadata:
 
 # project-management
 
-Use this procedure before adding, creating, removing, or initializing a project.
-Cloning or registering a project is add intake and uses the same trigger.
+Use this procedure before adding, creating, removing, or initializing a project or registering, resolving, or unregistering an external workspace.
+Cloning or registering a project or workspace is add intake and uses the same trigger.
 This skill is the single owner of Firstmate's project-management procedure.
 It does not replace `secondmate-provisioning`, which owns project clones inside persistent secondmate homes.
 
@@ -32,6 +32,36 @@ If the owning second mate cannot accept the route, report that concrete blocker 
 Resolve the project name, destination, delivery posture, and autonomy posture before changing local or remote state.
 Keep a newly added clone and its registry entry consistent, and roll back only artifacts created by the incomplete operation when a later initialization step fails and that rollback is safe.
 Do not overwrite or repurpose an existing path.
+
+## Register or route an external workspace
+
+An external workspace is a private pointer to one existing organizational directory plus explicit member Git repositories.
+It is separate from the managed-clone registry: `projects/` and `data/projects.md` retain their current behavior, and registration never creates a clone or project-registry line.
+The header and `--help` of `bin/fm-workspace.sh` own the exact manifest schema, flags, canonicalization, drift checks, atomic publication, and pointer-only removal mechanics.
+
+Before registration, apply the secondmate-scope intake above to the proposed workspace domain.
+Resolve a stable workspace id, one concise natural-language routing scope, the existing absolute outer root, the ordered outer instruction roots if any, and every explicit member identity and Git root.
+Use `--member` for a member contained by the outer root and `--external-member` only for a deliberately declared repository outside it.
+Never discover members by walking the outer directory, because registration is an explicit ownership decision rather than a filesystem scrape.
+Never initialize the outer root or a member, and never copy, move, flatten, or clone anything during this operation.
+
+Outer instruction roots are optional.
+When supplied, each root contributes its exact `AGENTS.md` content in registration order after the manifest's path and content commitment validates.
+That context is broader than the selected repository: the member worktree's own `AGENTS.md` and every more deeply nested instruction file remain authoritative on conflict.
+If an instruction or path drifts, normal listing and routing fail closed until the workspace is deliberately re-registered or safely unregistered.
+
+At work intake, select the logical workspace first and one explicit member identity second.
+Scaffold the task with matching `--workspace` and `--member` arguments to `bin/fm-brief.sh`, then spawn it with the same arguments to `bin/fm-spawn.sh`.
+The brief receives the validated instruction snapshot, and spawn resolves only the selected member Git root into the existing isolated-worktree lifecycle.
+The outer root is never a task cwd, primary checkout, or worktree source.
+The registry and route are backend-neutral: every supported primary harness receives the same brief, tmux, Herdr, Zellij, and cmux continue through Treehouse, and Orca continues through its own isolated worktree provider.
+
+Cross-repository implementation remains separate linked tasks, one explicitly selected member and one isolated worktree per task.
+Do not use batch dispatch to collapse workspace members, invent a shared multi-repository worktree, add secondary primary checkouts to a worker, or let a worker mutate any member's registered primary checkout.
+Editing non-Git files in the outer root and registering a zero-member workspace are unsupported in this slice because neither has the existing isolated-task preservation and cleanup lifecycle.
+
+Unregister only after the captain concretely approves the exact workspace id.
+Use the command's repeated-id confirmation; it removes only the private pointer record even when an external path has drifted, and it never deletes or edits the outer root, instruction files, or repositories.
 
 ## Delivery posture
 
