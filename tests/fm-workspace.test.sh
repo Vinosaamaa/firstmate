@@ -328,6 +328,38 @@ test_brief_propagates_validated_workspace_route() {
   pass "fm-workspace: brief propagation and spawn intake preserve the explicit route"
 }
 
+test_copy_preserves_pointer_without_cloning() {
+  local home target outer out target_record
+  home=$(new_home copy-source)
+  target="$TMP_ROOT/copy-target/home"
+  mkdir -p "$target/bin" "$target/data" "$target/projects"
+  printf '# Firstmate\n' > "$target/AGENTS.md"
+  outer="$TMP_ROOT/copy-source/domain"
+  mkdir -p "$outer"
+  outer=$(cd "$outer" && pwd -P)
+  git_repo "$outer/member"
+  FM_HOME="$home" "$WORKSPACE" add copy-domain \
+    --root "$outer" --scope 'Copied pointer fixture.' \
+    --member "member=$outer/member" >/dev/null
+
+  out=$(FM_HOME="$home" "$WORKSPACE" copy copy-domain --to-home "$target")
+  assert_contains "$out" "copied workspace copy-domain" "copy did not report the pointer transfer"
+  assert_contains "$out" "external root and repositories were not touched" "copy did not state its non-mutating boundary"
+  target_record="$target/data/workspaces/copy-domain.workspace"
+  assert_present "$target_record" "copy did not publish the target-home pointer"
+  cmp -s "$home/data/workspaces/copy-domain.workspace" "$target_record" \
+    || fail "copy changed the validated pointer bytes"
+  [ "$(FM_HOME="$target" "$WORKSPACE" resolve copy-domain member --path)" = "$outer/member" ] \
+    || fail "copied pointer did not resolve the canonical member repository"
+  [ -z "$(find "$target/projects" -mindepth 1 -maxdepth 1 -print)" ] \
+    || fail "copy created a duplicate managed project clone"
+
+  out=$(FM_HOME="$home" "$WORKSPACE" copy copy-domain --to-home "$target")
+  assert_contains "$out" "already matches" "copy was not idempotent for identical validated bytes"
+  assert_present "$outer/member/.git" "copy disturbed the canonical external repository"
+  pass "fm-workspace: copies validated pointers between homes without cloning or mutating repositories"
+}
+
 test_empty_non_git_outer_with_three_members
 test_instruction_order_and_drift_detection
 test_invalid_and_drifting_member_paths_fail_closed
@@ -336,5 +368,6 @@ test_malformed_registry_fails_closed
 test_unregister_removes_only_pointer_even_after_drift
 test_existing_managed_clone_registry_is_unchanged
 test_brief_propagates_validated_workspace_route
+test_copy_preserves_pointer_without_cloning
 
 printf 'All fm-workspace tests passed.\n'

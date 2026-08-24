@@ -12,11 +12,12 @@
 #        fm-brief.sh <task-id> <repo-name> --scout
 #            [--project-code <CODE> --task-label <one-or-two-words>]
 #            [--workspace <workspace-id> --member <member-id>] [--herdr-lab]
-#        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#        fm-brief.sh <task-id> --secondmate {<project>...|--workspace <workspace-id>|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
-#   --secondmate writes a persistent secondmate charter. The project list
-#   is cloned into the secondmate home, while the natural-language scope
+#   --secondmate writes a persistent secondmate charter. A project list is
+#   cloned into the secondmate home; --workspace instead copies one validated
+#   external-workspace pointer without cloning its member repositories. The natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
 #   captain-relevant escalations and marked from-firstmate replies append to this
 #   home's status file.
@@ -174,12 +175,20 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
-[ "$WORKSPACE_SET" -eq "$WORKSPACE_MEMBER_SET" ] || {
-  echo "error: --workspace and --member are required together" >&2
-  exit 1
-}
 [ "$WORKSPACE_SET" -eq 0 ] || [ -n "$WORKSPACE_ID" ] || { echo "error: --workspace requires a non-empty value" >&2; exit 1; }
 [ "$WORKSPACE_MEMBER_SET" -eq 0 ] || [ -n "$WORKSPACE_MEMBER" ] || { echo "error: --member requires a non-empty value" >&2; exit 1; }
+
+if [ "$KIND" = secondmate ]; then
+  [ "$WORKSPACE_MEMBER_SET" -eq 0 ] || {
+    echo "error: --member applies only to ordinary ship or scout workspace routes; a secondmate receives the whole workspace pointer" >&2
+    exit 1
+  }
+else
+  [ "$WORKSPACE_SET" -eq "$WORKSPACE_MEMBER_SET" ] || {
+    echo "error: --workspace and --member are required together for ship and scout briefs" >&2
+    exit 1
+  }
+fi
 
 if [ "$KIND" = secondmate ]; then
   [ "$PROJECT_CODE_SET" -eq 0 ] && [ "$TASK_LABEL_SET" -eq 0 ] || {
@@ -222,11 +231,6 @@ ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
-  exit 1
-fi
-
-if [ "$KIND" = secondmate ] && [ "$WORKSPACE_SET" -eq 1 ]; then
-  echo "error: --workspace/--member apply only to ordinary ship or scout tasks; secondmate workspace ownership is a separate product slice" >&2
   exit 1
 fi
 
@@ -278,15 +282,25 @@ while [ "$idx" -lt "${#POS[@]}" ]; do
 done
 if [ "$NO_PROJECTS" -eq 1 ]; then
   [ -z "$SECONDMATE_PROJECTS" ] || { echo "error: --no-projects cannot be combined with a project list" >&2; exit 1; }
+  [ "$WORKSPACE_SET" -eq 0 ] || { echo "error: --no-projects cannot be combined with --workspace" >&2; exit 1; }
+elif [ "$WORKSPACE_SET" -eq 1 ]; then
+  [ -z "$SECONDMATE_PROJECTS" ] || { echo "error: --workspace cannot be combined with a project list" >&2; exit 1; }
+  "$FM_ROOT/bin/fm-workspace.sh" show "$WORKSPACE_ID" >/dev/null || exit 1
 else
-  [ -n "$SECONDMATE_PROJECTS" ] || { echo "error: --secondmate requires at least one project, or --no-projects for a project-less home" >&2; exit 1; }
+  [ -n "$SECONDMATE_PROJECTS" ] || { echo "error: --secondmate requires a project list, --workspace <workspace-id>, or --no-projects" >&2; exit 1; }
 fi
 SECONDMATE_CHARTER=${FM_SECONDMATE_CHARTER:-"{TASK}"}
 SECONDMATE_SCOPE=${FM_SECONDMATE_SCOPE:-${FM_SECONDMATE_CHARTER:-"{TASK}"}}
 if [ "$NO_PROJECTS" -eq 1 ]; then
+  WORKSPACE_POINTERS_BODY="None."
   PROJECT_CLONES_BODY="None. This is a project-less domain: its subject is the firstmate repo this home lives in, so it needs no separate clones under \`projects/\`; its crews take pooled worktrees of that firstmate repo."
   PROJECT_CLONES_NOTE="This domain has no separate project clones: its subject is the firstmate repo this home lives in, and its crews take pooled worktrees of that repo."
+elif [ "$WORKSPACE_SET" -eq 1 ]; then
+  WORKSPACE_POINTERS_BODY="- $WORKSPACE_ID"
+  PROJECT_CLONES_BODY="None. This home routes through the validated \`$WORKSPACE_ID\` external-workspace pointer and does not duplicate its member repositories under \`projects/\`."
+  PROJECT_CLONES_NOTE="Resolve the workspace first and one explicit member repository second. The registered external repositories remain canonical; every delegated implementation still uses the ordinary isolated-worktree lifecycle."
 else
+  WORKSPACE_POINTERS_BODY="None."
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
 fi
@@ -298,6 +312,9 @@ $SECONDMATE_CHARTER
 
 # Routing scope
 $SECONDMATE_SCOPE
+
+# Workspace pointers
+$WORKSPACE_POINTERS_BODY
 
 # Project clones
 $PROJECT_CLONES_BODY

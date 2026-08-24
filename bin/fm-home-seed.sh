@@ -2,7 +2,7 @@
 # Provision and route persistent secondmate homes.
 #
 # Usage:
-#   fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}
+#   fm-home-seed.sh <id> <home|-> {<project>...|--workspace <workspace-id>|--no-projects}
 #       Provision <home> as an isolated firstmate home. If <home> is "-", acquire
 #       a fresh firstmate worktree via "treehouse get --lease", which durably
 #       leases the worktree under the secondmate <id> so the home survives with
@@ -22,6 +22,9 @@
 #       generated briefs, new homes, new project clones, and registry edits are
 #       rolled back. Treehouse-acquired homes are returned only when the rollback
 #       target is safe; a failed return warns because the lease may still be held.
+#       `--workspace` copies one validated external-workspace pointer into the
+#       secondmate home without cloning or modifying its member repositories.
+#       The active-home pointer remains authoritative and is retained.
 #       Set FM_SECONDMATE_CHARTER='<charter>' to seed from inline charter text
 #       when no filled charter brief exists. Set FM_SECONDMATE_SCOPE='<scope>'
 #       to override the registry routing scope. Otherwise the registry summary
@@ -51,7 +54,7 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
 usage() {
-  echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
+  echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--workspace <workspace-id>|--no-projects}" >&2
   echo "       fm-home-seed.sh validate" >&2
 }
 
@@ -530,6 +533,8 @@ SEED_SUB_REG_EXISTED=0
 SEED_CHARTER_EXISTED=0
 SEED_MARKER_EXISTED=0
 SEED_PARENT_MARKER_EXISTED=0
+SEED_WORKSPACE_ID=
+SEED_WORKSPACE_CREATED=0
 
 restore_seed_file() {
   local existed=$1 backup=$2 path=$3
@@ -646,6 +651,12 @@ seed_rollback() {
           [ -n "$project_path" ] || continue
           seed_remove_created_project "$project_path"
         done < "$SEED_CREATED_PROJECTS_FILE"
+      fi
+      if [ "${SEED_WORKSPACE_CREATED:-0}" = 1 ] && [ -n "${SEED_WORKSPACE_ID:-}" ]; then
+        (
+          unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+          FM_HOME="$SEED_HOME" "$FM_ROOT/bin/fm-workspace.sh" remove "$SEED_WORKSPACE_ID" --confirm "$SEED_WORKSPACE_ID" >/dev/null 2>&1
+        ) || true
       fi
       if [ -n "${SEED_BACKUP_DIR:-}" ] && [ "${SEED_HOME_BACKED_UP:-0}" = 1 ]; then
         restore_seed_file "$SEED_MARKER_EXISTED" "$SEED_BACKUP_DIR/marker" "$SEED_HOME/$SUB_HOME_MARKER"
@@ -798,19 +809,45 @@ refuse_projectful_projectless_charter() {
   return 1
 }
 
+refuse_mismatched_workspace_charter() {  # <id> <brief> <workspace-id>
+  local id=$1 brief=$2 workspace_id=$3 workspace_pointers project_clones
+  workspace_pointers=$(brief_section_text "$brief" "Workspace pointers")
+  project_clones=$(brief_section_text "$brief" "Project clones")
+  if [ "$workspace_pointers" = "- $workspace_id" ] \
+    && printf '%s\n' "$project_clones" | grep -F "does not duplicate its member repositories" >/dev/null 2>&1 \
+    && ! printf '%s\n' "$project_clones" | grep -Eq '^[[:space:]]*-[[:space:]]+'; then
+    return 0
+  fi
+  printf 'error: existing charter brief at %s does not select workspace %s without project clones\n' "$brief" "$workspace_id" >&2
+  printf 'error: re-scaffold it with fm-brief.sh %s --secondmate --workspace %s or remove the stale brief before seeding\n' "$id" "$workspace_id" >&2
+  return 1
+}
+
 seed_home() {
   local id=$1 requested_home=$2 requested_abs home projects_csv project project_dst charter_summary charter_scope
-  local no_projects=0 arg
+  local no_projects=0 workspace_id='' arg
   local filtered=()
   shift 2
-  # A deliberate --no-projects signal (anywhere in the project position) seeds a
-  # project-less home; an accidental omission with no signal still fails loudly.
-  for arg in "$@"; do
-    if [ "$arg" = "--no-projects" ]; then
-      no_projects=1
-    else
-      filtered+=("$arg")
-    fi
+  # Exactly one source shape is required: managed projects, one external
+  # workspace pointer, or the explicit project-less firstmate-repo case.
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    shift
+    case "$arg" in
+      --no-projects) no_projects=1 ;;
+      --workspace)
+        [ "$#" -gt 0 ] || { echo "error: --workspace requires a workspace id" >&2; return 1; }
+        [ -z "$workspace_id" ] || { echo "error: --workspace may be supplied only once" >&2; return 1; }
+        workspace_id=$1
+        shift
+        ;;
+      --workspace=*)
+        [ -z "$workspace_id" ] || { echo "error: --workspace may be supplied only once" >&2; return 1; }
+        workspace_id=${arg#--workspace=}
+        ;;
+      --*) echo "error: unknown secondmate seed option: $arg" >&2; return 1 ;;
+      *) filtered+=("$arg") ;;
+    esac
   done
   if [ "${#filtered[@]}" -gt 0 ]; then
     set -- "${filtered[@]}"
@@ -819,8 +856,12 @@ seed_home() {
   fi
   if [ "$no_projects" -eq 1 ]; then
     [ $# -eq 0 ] || { echo "error: --no-projects cannot be combined with a project list" >&2; return 1; }
+    [ -z "$workspace_id" ] || { echo "error: --no-projects cannot be combined with --workspace" >&2; return 1; }
+  elif [ -n "$workspace_id" ]; then
+    [ $# -eq 0 ] || { echo "error: --workspace cannot be combined with a project list" >&2; return 1; }
+    FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" show "$workspace_id" >/dev/null || return 1
   else
-    [ $# -gt 0 ] || { echo "error: secondmate needs at least one project, or --no-projects for a project-less home" >&2; return 1; }
+    [ $# -gt 0 ] || { echo "error: secondmate needs a project list, --workspace <workspace-id>, or --no-projects" >&2; return 1; }
   fi
 
   mkdir -p "$STATE" || return 1
@@ -848,6 +889,8 @@ seed_home() {
   SEED_PARENT_BRIEF="$DATA/$id/brief.md"
   SEED_PARENT_BRIEF_CREATED=0
   SEED_PARENT_BRIEF_DIR_CREATED=0
+  SEED_WORKSPACE_ID=$workspace_id
+  SEED_WORKSPACE_CREATED=0
   SEED_SUB_REG_EXISTED=0
   SEED_CHARTER_EXISTED=0
   SEED_MARKER_EXISTED=0
@@ -880,6 +923,11 @@ seed_home() {
     if [ -f "$SEED_PARENT_BRIEF" ]; then
       refuse_projectful_projectless_charter "$id" "$SEED_PARENT_BRIEF" || return 1
     fi
+  elif [ -n "$workspace_id" ]; then
+    refuse_populated_projectless_home "$home" || return 1
+    if [ -f "$SEED_PARENT_BRIEF" ]; then
+      refuse_mismatched_workspace_charter "$id" "$SEED_PARENT_BRIEF" "$workspace_id" || return 1
+    fi
   fi
   mkdir -p "$DATA" "$home/data" "$home/state" "$home/config" "$home/projects"
   if [ -f "$home/data/projects.md" ]; then
@@ -908,6 +956,8 @@ seed_home() {
     [ -d "$DATA/$id" ] || SEED_PARENT_BRIEF_DIR_CREATED=1
     if [ "$no_projects" -eq 1 ]; then
       "$FM_ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects
+    elif [ -n "$workspace_id" ]; then
+      "$FM_ROOT/bin/fm-brief.sh" "$id" --secondmate --workspace "$workspace_id"
     else
       "$FM_ROOT/bin/fm-brief.sh" "$id" --secondmate "$@"
     fi
@@ -928,20 +978,25 @@ seed_home() {
     return 1
   }
 
-  for project in "$@"; do
-    project_dst=$(validate_project_destination "$home" "$project") || return 1
-    [ -e "$project_dst" ] || printf '%s\n' "$project_dst" >> "$SEED_CREATED_PROJECTS_FILE"
-    clone_project "$project" "$home"
-  done
-  sync_project_registry "$home" "$@"
-  for project in "$@"; do
-    project_dst=$(validate_project_destination "$home" "$project") || return 1
-    if seed_project_was_created "$project_dst"; then
-      initialize_no_mistakes_project "$home" "$project" 1
-    else
-      initialize_no_mistakes_project "$home" "$project" 0
-    fi
-  done
+  if [ -n "$workspace_id" ]; then
+    [ -e "$home/data/workspaces/$workspace_id.workspace" ] || SEED_WORKSPACE_CREATED=1
+    FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$home" >/dev/null
+  else
+    for project in "$@"; do
+      project_dst=$(validate_project_destination "$home" "$project") || return 1
+      [ -e "$project_dst" ] || printf '%s\n' "$project_dst" >> "$SEED_CREATED_PROJECTS_FILE"
+      clone_project "$project" "$home"
+    done
+    sync_project_registry "$home" "$@"
+    for project in "$@"; do
+      project_dst=$(validate_project_destination "$home" "$project") || return 1
+      if seed_project_was_created "$project_dst"; then
+        initialize_no_mistakes_project "$home" "$project" 1
+      else
+        initialize_no_mistakes_project "$home" "$project" 0
+      fi
+    done
+  fi
 
   cp "$SEED_PARENT_BRIEF" "$home/data/charter.md"
 

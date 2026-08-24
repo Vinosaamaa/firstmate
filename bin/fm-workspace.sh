@@ -16,6 +16,7 @@
 #   fm-workspace.sh list
 #   fm-workspace.sh show <workspace-id>
 #   fm-workspace.sh resolve <workspace-id> <member-id> [--path|--context]
+#   fm-workspace.sh copy <workspace-id> --to-home <absolute-firstmate-home>
 #   fm-workspace.sh remove <workspace-id> --confirm <workspace-id>
 #   fm-workspace.sh unregister ...                       # alias for remove
 #
@@ -702,6 +703,73 @@ command_resolve() {
   esac
 }
 
+command_copy() {
+  local id=${1:-} target_home='' arg source_record target_real target_record idx
+  local args=()
+  [ -n "$id" ] || die "copy requires a workspace id"
+  valid_id "$id" || die "invalid workspace id: $id"
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    shift
+    case "$arg" in
+      --to-home)
+        [ "$#" -gt 0 ] || die "--to-home requires an absolute firstmate home"
+        target_home=$1
+        shift
+        ;;
+      --to-home=*) target_home=${arg#--to-home=} ;;
+      *) die "unknown copy option: $arg" ;;
+    esac
+  done
+  [ -n "$target_home" ] || die "copy requires --to-home <absolute-firstmate-home>"
+  require_absolute "target firstmate home" "$target_home"
+  target_real=$(canonical_directory "$target_home") \
+    || die "target firstmate home is missing or not a directory: $target_home"
+  [ "$target_real" != "$(canonical_directory "$FM_HOME")" ] \
+    || die "target firstmate home must differ from the active home"
+  [ -f "$target_real/AGENTS.md" ] && [ -d "$target_real/bin" ] \
+    || die "target is not a firstmate home: $target_real"
+
+  validate_registry || exit 1
+  load_named_record "$id" || exit 1
+  source_record=$(record_path "$id")
+  target_record="$target_real/data/workspaces/$id.workspace"
+  if [ -e "$target_record" ] || [ -L "$target_record" ]; then
+    [ -f "$target_record" ] && [ ! -L "$target_record" ] \
+      || die "target workspace record is unsafe: $target_record"
+    (
+      unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+      FM_HOME="$target_real" "$SCRIPT_DIR/fm-workspace.sh" show "$id" >/dev/null
+    ) || die "target workspace registry is invalid: $target_real"
+    cmp -s "$source_record" "$target_record" \
+      || die "target workspace '$id' differs from the active-home pointer: $target_record"
+    printf 'workspace %s already matches in %s\n' "$id" "$target_real"
+    return 0
+  fi
+
+  args=(add "$REC_ID" --root "$REC_ROOT" --scope "$REC_SCOPE")
+  idx=0
+  while [ "$idx" -lt "${#REC_INSTRUCTION_PATHS[@]}" ]; do
+    args+=(--instruction-root "${REC_INSTRUCTION_PATHS[$idx]}")
+    idx=$((idx + 1))
+  done
+  idx=0
+  while [ "$idx" -lt "${#REC_MEMBER_IDS[@]}" ]; do
+    case "${REC_MEMBER_RELATIONS[$idx]}" in
+      contained) args+=(--member "${REC_MEMBER_IDS[$idx]}=${REC_MEMBER_PATHS[$idx]}") ;;
+      external) args+=(--external-member "${REC_MEMBER_IDS[$idx]}=${REC_MEMBER_PATHS[$idx]}") ;;
+      *) die "workspace '$id' has an unsupported member relation" ;;
+    esac
+    idx=$((idx + 1))
+  done
+  (
+    unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+    FM_HOME="$target_real" "$SCRIPT_DIR/fm-workspace.sh" "${args[@]}" >/dev/null
+  ) || die "failed to copy workspace '$id' into $target_real"
+  printf 'copied workspace %s to %s; external root and repositories were not touched\n' "$id" "$target_real"
+}
+
 command_remove() {
   local id=${1:-} confirm='' arg target first second extra
   [ -n "$id" ] || die "remove requires a workspace id"
@@ -742,6 +810,7 @@ case "${1:-}" in
   list) shift; [ "$#" -eq 0 ] || die "list accepts no arguments"; command_list ;;
   show) shift; command_show "$@" ;;
   resolve) shift; command_resolve "$@" ;;
+  copy) shift; command_copy "$@" ;;
   remove|unregister) shift; command_remove "$@" ;;
   *) die "unknown command: $1" ;;
 esac
