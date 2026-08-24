@@ -246,9 +246,9 @@ test_project_mode_maps_the_conditional_policy() {
   home="$TMP_ROOT/project-mode/home"
   mkdir -p "$home/data"
   cat > "$home/data/projects.md" <<'EOF'
-- prodproj [no-mistakes-prod-only] - fixture (added 2026-01-01)
-- yoloproj [no-mistakes-prod-only +yolo] - fixture (added 2026-01-01)
-- flatproj [direct-PR] - fixture (added 2026-01-01)
+- prodproj [no-mistakes-prod-only] [code=PP] - fixture (added 2026-01-01)
+- yoloproj [no-mistakes-prod-only +yolo] [code=YP] - fixture (added 2026-01-01)
+- flatproj [direct-PR] [code=FP] - fixture (added 2026-01-01)
 - typoproj [no-mistakez] - fixture (added 2026-01-01)
 EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" prodproj 2>/dev/null)
@@ -269,7 +269,18 @@ EOF
   [ "$out" = "no-mistakes off" ] || fail "a typo'd mode no longer falls back to the most rigorous default"
   err=$(FM_HOME="$home" "$PROJECT_MODE" typoproj 2>&1 >/dev/null)
   assert_contains "$err" "unknown mode" "a typo'd registry mode stopped warning"
-  pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --code prodproj 2>/dev/null)
+  [ "$out" = PP ] || fail "--code did not return the registered stable acronym (got '$out')"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" --code typoproj 2>&1 >/dev/null)
+  assert_contains "$err" 'has no single [code=<CODE>] annotation' \
+    "missing ProjectCode did not refuse instead of guessing"
+
+  printf '%s\n' '- duplicate [direct-PR] [code=PP] - collision' >> "$home/data/projects.md"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" --code prodproj 2>&1 >/dev/null)
+  assert_contains "$err" "ProjectCode 'PP' is not unique" \
+    "duplicate ProjectCode did not refuse"
+  pass "fm-project-mode: posture compatibility and explicit unique ProjectCode lookup are enforced"
 }
 
 test_ship_spawn_requires_a_valid_delivery_contract

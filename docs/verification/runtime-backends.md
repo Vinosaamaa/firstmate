@@ -66,6 +66,28 @@ ok - codex-cli 0.149.0-alpha.4.1 resumed exact structured session <session-id> i
 
 Hermetic transaction tests separately pin that Firstmate launches the interactive spelling `codex resume <exact-session-id>` and never `--last`.
 
+### Codex display title and Herdr propagation
+
+The supported interactive rename and downstream Herdr surface were verified on 2026-08-24 with codex-cli 0.149.0-alpha.4.1, Herdr 0.8.0 (protocol 19), and the current Herdr Codex integration v7.  The focused-pane counterfactual began with Codex's generic UUID title, submitted `/rename Darwin · FM · External workspace`, and immediately observed the renamed conversation in Herdr while `/status` continued to show the same canonical session UUID.  Exact `codex resume <UUID>` restored that conversation and the same assigned title.
+
+The executable no-focus guard covers the masking variant where the initial generic `terminal_title` may be blank and is therefore not a session-identity source:
+
+```sh
+FM_CODEX_TITLE_LIVE_E2E=1 \
+  HERDR_LAB_HELPER="$PWD/bin/fm-herdr-lab.sh" \
+  bin/fm-test-run.sh tests/fm-codex-title-live-e2e.test.sh
+```
+
+Bounded observed output:
+
+```text
+ok - codex-cli 0.149.0-alpha.4.1 on herdr 0.8.0 preserved agent_session.value across rename/resume while Herdr followed automatically without terminal_title identity inference
+```
+
+The guard obtains the exact UUID from the official Codex integration's `agent_session.value`, requires a canonical lowercase UUID, and proves the pre-rename title is not already the assigned Firstmate title.  It then runs Firstmate's real Codex title-delivery adapter, verifies Herdr's existing header ends in `Codex | Darwin · FM · External workspace`, and compares the native session value before rename, after rename, and after exact resume.  Herdr's leading state glyph may change while a turn is working; that state remains outside the conversation title.
+
+No Herdr rename or display-metadata command participates.  Herdr follows Codex's supported `/rename` automatically, and the guard never reads or edits Codex session logs or databases.  Hermetic adapter tests separately exercise the identical delivery contract on both tmux and Herdr, including safe legacy fallback when explicit display metadata is absent.
+
 ### Agent liveness name sources
 
 The earlier record that every harness is observed under its own `#{pane_current_command}` no longer holds and has been replaced by the per-harness evidence below.

@@ -134,7 +134,7 @@ family_for_basename() {
   case "$1" in
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
     fm-bearings-board.test.sh|\
-    fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
+    fm-brief.test.sh|fm-display-title.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-classify-decision-key.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
@@ -188,7 +188,7 @@ family_for_basename() {
     fm-afk-pi-herdr-return-e2e.test.sh|\
     fm-cmux-claude-composer-live-e2e.test.sh|\
     fm-composer-matrix-live-e2e.test.sh|\
-    fm-codex-continuity-live-e2e.test.sh|fm-codex-resume-live-e2e.test.sh|\
+    fm-codex-continuity-live-e2e.test.sh|fm-codex-resume-live-e2e.test.sh|fm-codex-title-live-e2e.test.sh|\
     fm-grok-continuity-live-e2e.test.sh|\
     fm-cursor-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-liveness-drift-live-e2e.test.sh|\
@@ -202,7 +202,7 @@ family_for_basename() {
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|fm-identity.test.sh|\
     fm-tmux-agent-liveness.test.sh|\
-    fm-codex-session.test.sh|fm-control.test.sh|fm-control-relaunch.test.sh|\
+    fm-codex-session.test.sh|fm-codex-title.test.sh|fm-control.test.sh|fm-control-relaunch.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
@@ -406,6 +406,8 @@ tests/fm-claude-stop-autoarm-live-e2e.test.sh 30
 tests/fm-claude-stop-autoarm.test.sh 60633
 tests/fm-cmux-claude-composer-live-e2e.test.sh 20
 tests/fm-codex-continuity-live-e2e.test.sh 19
+tests/fm-codex-title-live-e2e.test.sh 20
+tests/fm-codex-title.test.sh 300
 tests/fm-composer-matrix-live-e2e.test.sh 21
 tests/fm-control-relaunch.test.sh 31881
 tests/fm-control.test.sh 36712
@@ -413,6 +415,7 @@ tests/fm-cursor-harness.test.sh 30071
 tests/fm-cursor-primary-live-e2e.test.sh 20
 tests/fm-cursor-primary.test.sh 52324
 tests/fm-daemon.test.sh 25834
+tests/fm-display-title.test.sh 200
 tests/fm-documentation-audiences.test.sh 642
 tests/fm-fleet-snapshot-view.test.sh 6995
 tests/fm-fleet-sync.test.sh 20194
@@ -934,6 +937,11 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       printf '%s\n' real-herdr-gated
       ;;
+    bin/fm-codex-title-lib.sh)
+      printf '%s\n' backend-dispatch
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' live-harness-optin
+      ;;
     bin/fm-codex-session-lib.sh|bin/fm-control.sh)
       printf '%s\n' backend-dispatch
       printf '%s\n' real-herdr-gated
@@ -1031,7 +1039,7 @@ families_for_changed_path() {
     bin/fm-captain-hold.sh|bin/fm-decision-hold.sh|bin/fm-supervision*|bin/fm-transition-lib.sh|\
     bin/fm-tmux-lib.sh|bin/fm-marker-lib.sh|bin/fm-operational-input.sh|bin/fm-tasks-axi-lib.sh|\
     bin/fm-vendor-auth-probe.sh|\
-    bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-workspace.sh|bin/fm-promote.sh|\
+    bin/fm-primary-scope-lib.sh|bin/fm-project-mode.sh|bin/fm-workspace.sh|bin/fm-display-title-lib.sh|bin/fm-promote.sh|\
     bin/fm-ff-lib.sh|bin/fm-gotmp*|bin/*pretool*)
       printf '%s\n' pure-contract-unit
       ;;

@@ -267,6 +267,40 @@ test_ship_mode_is_explicit_not_registry() {
   pass "fm-brief.sh: the explicit ship mode wins over the registered posture"
 }
 
+test_display_identity_is_explicit_paired_metadata() {
+  local home brief out status
+  home="$TMP_ROOT/display-identity-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" title-aware firstmate \
+    --mode direct-PR --project-code FM --task-label 'External workspace' >/dev/null 2>&1 \
+    || fail "title-aware brief should scaffold"
+  brief="$home/data/title-aware/brief.md"
+  grep -qx 'Firstmate project code: FM' "$brief" \
+    || fail "brief did not record explicit ProjectCode"
+  grep -qx 'Firstmate task label: External workspace' "$brief" \
+    || fail "brief did not record explicit TaskLabel"
+  [ "$(grep -n '^Firstmate project code:' "$brief" | cut -d: -f1)" -lt "$(grep -n '^# Task$' "$brief" | cut -d: -f1)" ] \
+    || fail "display metadata must be in the machine-readable pre-task header"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" title-partial firstmate \
+    --mode direct-PR --project-code FM 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "partial display metadata was accepted"
+  assert_contains "$out" '--project-code and --task-label are required together' \
+    "partial display metadata refusal lost its diagnostic"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" title-long firstmate \
+    --mode direct-PR --project-code FM --task-label 'Fix the sidebar' 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "three-word TaskLabel was accepted"
+  assert_contains "$out" 'must be one or two words' \
+    "TaskLabel word-limit refusal lost its diagnostic"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" title-legacy firstmate --mode direct-PR >/dev/null 2>&1 \
+    || fail "legacy brief without optional display metadata should remain compatible"
+  assert_no_grep '^Firstmate project code:' "$home/data/title-legacy/brief.md" \
+    "legacy brief invented a ProjectCode"
+  pass "fm-brief.sh: explicit paired display metadata is strict with legacy fallback"
+}
+
 # yolo is firstmate's merge authority and never reaches the worker, and a scout
 # or charter carries no delivery contract. Each must refuse rather than accept and
 # discard the flag, which would look recorded but change nothing.
@@ -718,6 +752,7 @@ test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
+test_display_identity_is_explicit_paired_metadata
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
