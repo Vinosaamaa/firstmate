@@ -7,7 +7,9 @@
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+#            [--workspace <workspace-id> --member <member-id>]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+#            [--workspace <workspace-id> --member <member-id>]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -58,6 +60,11 @@
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
 # Refuses to overwrite an existing brief.
+# `--workspace` and `--member` are an inseparable explicit route for an external
+# workspace registered by bin/fm-workspace.sh. The repo-name positional must be
+# that member id. The scaffold snapshots the validated ordered outer instruction
+# context into the brief, records a machine-readable route and canonical member
+# Git root, and leaves nested member-repository AGENTS.md authority intact.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,6 +116,10 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+WORKSPACE_ID=
+WORKSPACE_MEMBER=
+WORKSPACE_SET=0
+WORKSPACE_MEMBER_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -118,6 +129,8 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      workspace) WORKSPACE_ID=$a; WORKSPACE_SET=1 ;;
+      member) WORKSPACE_MEMBER=$a; WORKSPACE_MEMBER_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -130,6 +143,10 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --workspace) want_value=workspace ;;
+    --workspace=*) WORKSPACE_ID=${a#--workspace=}; WORKSPACE_SET=1 ;;
+    --member) want_value=member ;;
+    --member=*) WORKSPACE_MEMBER=${a#--member=}; WORKSPACE_MEMBER_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -138,6 +155,12 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+[ "$WORKSPACE_SET" -eq "$WORKSPACE_MEMBER_SET" ] || {
+  echo "error: --workspace and --member are required together" >&2
+  exit 1
+}
+[ "$WORKSPACE_SET" -eq 0 ] || [ -n "$WORKSPACE_ID" ] || { echo "error: --workspace requires a non-empty value" >&2; exit 1; }
+[ "$WORKSPACE_MEMBER_SET" -eq 0 ] || [ -n "$WORKSPACE_MEMBER" ] || { echo "error: --member requires a non-empty value" >&2; exit 1; }
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -161,6 +184,11 @@ ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
+  exit 1
+fi
+
+if [ "$KIND" = secondmate ] && [ "$WORKSPACE_SET" -eq 1 ]; then
+  echo "error: --workspace/--member apply only to ordinary ship or scout tasks; secondmate workspace ownership is a separate product slice" >&2
   exit 1
 fi
 
@@ -284,7 +312,21 @@ fi
 exit 0
 fi
 
-REPO=${POS[1]}
+REPO=${POS[1]:-}
+[ -n "$REPO" ] || { echo "error: ship and scout briefs require a repo-name positional" >&2; exit 1; }
+WORKSPACE_SECTION=
+if [ "$WORKSPACE_SET" -eq 1 ]; then
+  [ "$REPO" = "$WORKSPACE_MEMBER" ] || {
+    echo "error: repo-name '$REPO' must equal the selected workspace member id '$WORKSPACE_MEMBER'" >&2
+    exit 1
+  }
+  WORKSPACE_REPOSITORY=$("$FM_ROOT/bin/fm-workspace.sh" resolve "$WORKSPACE_ID" "$WORKSPACE_MEMBER" --path) || exit 1
+  WORKSPACE_CONTEXT=$("$FM_ROOT/bin/fm-workspace.sh" resolve "$WORKSPACE_ID" "$WORKSPACE_MEMBER" --context) || exit 1
+  WORKSPACE_SECTION="Workspace route: workspace=$WORKSPACE_ID member=$WORKSPACE_MEMBER
+Workspace repository: $WORKSPACE_REPOSITORY
+
+$WORKSPACE_CONTEXT"
+fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -324,6 +366,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
+
+$WORKSPACE_SECTION
 
 $HERDR_SECTION
 
@@ -437,6 +481,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
+
+$WORKSPACE_SECTION
 
 $HERDR_SECTION
 
