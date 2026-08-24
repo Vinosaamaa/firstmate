@@ -61,7 +61,9 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `backends/orca.sh`       | Experimental Orca backend adapter owning both worktree and terminal                  |
 | `backends/cmux.sh`       | Experimental cmux session-provider adapter                                           |
 | `fm-config-push.sh`      | Push declared inherited local material to live local or remote secondmates and send the placement-specific config reread when changed |
-| `fm-project-mode.sh`     | Resolve a project's registered delivery posture from `data/projects.md` for fleet sync and home seeding |
+| `fm-project-mode.sh`     | Resolve a project's registered delivery posture, or its explicit stable ProjectCode with `--code`, from `data/projects.md` |
+| `fm-display-title-lib.sh` | Validate separate presentation fields and render the Unicode title or explicit ASCII/narrow fallback |
+| `fm-codex-title-lib.sh`  | Rename the loaded Codex conversation before delivering its initial or resumed task input |
 | `fm-workspace.sh`        | Register, validate, list, resolve, and safely unregister private external-workspace pointers |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |

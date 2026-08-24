@@ -6,10 +6,12 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
-#            [--workspace <workspace-id> --member <member-id>]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
-#            [--workspace <workspace-id> --member <member-id>]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only>
+#            [--project-code <CODE> --task-label <one-or-two-words>]
+#            [--workspace <workspace-id> --member <member-id>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout
+#            [--project-code <CODE> --task-label <one-or-two-words>]
+#            [--workspace <workspace-id> --member <member-id>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -29,6 +31,11 @@
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
+#   --project-code and --task-label are explicit presentation identity metadata.
+#   They are required together for title-aware ship/scout intake. ProjectCode is
+#   the stable registered acronym resolved by `fm-project-mode.sh --code`; TaskLabel
+#   is a deliberate one- or two-word intake label, never inferred from task prose
+#   or the raw task id. Both absent preserves legacy brief compatibility.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads it:
@@ -82,6 +89,8 @@ esac
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-display-title-lib.sh
+. "$SCRIPT_DIR/fm-display-title-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -117,6 +126,10 @@ WORKSPACE_ID=
 WORKSPACE_MEMBER=
 WORKSPACE_SET=0
 WORKSPACE_MEMBER_SET=0
+PROJECT_CODE=
+PROJECT_CODE_SET=0
+TASK_LABEL=
+TASK_LABEL_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -128,6 +141,8 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       workspace) WORKSPACE_ID=$a; WORKSPACE_SET=1 ;;
       member) WORKSPACE_MEMBER=$a; WORKSPACE_MEMBER_SET=1 ;;
+      project-code) PROJECT_CODE=$a; PROJECT_CODE_SET=1 ;;
+      task-label) TASK_LABEL=$a; TASK_LABEL_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -144,6 +159,10 @@ for a in "$@"; do
     --workspace=*) WORKSPACE_ID=${a#--workspace=}; WORKSPACE_SET=1 ;;
     --member) want_value=member ;;
     --member=*) WORKSPACE_MEMBER=${a#--member=}; WORKSPACE_MEMBER_SET=1 ;;
+    --project-code) want_value='project-code' ;;
+    --project-code=*) PROJECT_CODE=${a#--project-code=}; PROJECT_CODE_SET=1 ;;
+    --task-label) want_value='task-label' ;;
+    --task-label=*) TASK_LABEL=${a#--task-label=}; TASK_LABEL_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -158,6 +177,25 @@ done
 }
 [ "$WORKSPACE_SET" -eq 0 ] || [ -n "$WORKSPACE_ID" ] || { echo "error: --workspace requires a non-empty value" >&2; exit 1; }
 [ "$WORKSPACE_MEMBER_SET" -eq 0 ] || [ -n "$WORKSPACE_MEMBER" ] || { echo "error: --member requires a non-empty value" >&2; exit 1; }
+
+if [ "$KIND" = secondmate ]; then
+  [ "$PROJECT_CODE_SET" -eq 0 ] && [ "$TASK_LABEL_SET" -eq 0 ] || {
+    echo "error: --project-code/--task-label apply only to one-task ship or scout briefs, not persistent secondmate charters" >&2
+    exit 1
+  }
+elif [ "$PROJECT_CODE_SET" -ne "$TASK_LABEL_SET" ]; then
+  echo "error: --project-code and --task-label are required together; never guess one presentation identity field from another" >&2
+  exit 1
+elif [ "$PROJECT_CODE_SET" -eq 1 ]; then
+  fm_display_project_code_valid "$PROJECT_CODE" || {
+    echo "error: --project-code must be 2-8 uppercase ASCII letters/digits beginning with a letter" >&2
+    exit 1
+  }
+  fm_display_task_label_valid "$TASK_LABEL" || {
+    echo "error: --task-label must be one or two words with no surrounding/repeated spaces or middle dots" >&2
+    exit 1
+  }
+fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -205,6 +243,14 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+
+DISPLAY_METADATA=
+if [ "$PROJECT_CODE_SET" -eq 1 ]; then
+  DISPLAY_METADATA="Firstmate project code: $PROJECT_CODE
+Firstmate task label: $TASK_LABEL
+
+"
+fi
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -344,7 +390,7 @@ if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
+$DISPLAY_METADATA# Task
 {TASK}
 
 $WORKSPACE_SECTION
@@ -457,7 +503,7 @@ DOD=${DOD%$'\n'}
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
+$DISPLAY_METADATA# Task
 {TASK}
 
 $WORKSPACE_SECTION

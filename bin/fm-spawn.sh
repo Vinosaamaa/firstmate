@@ -173,6 +173,9 @@
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 #     __WORKTREE__  absolute path to the task worktree
 #     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
+#     __CODEXINPUT__ Codex positional operational input on legacy briefs; empty
+#                    for title-aware briefs because the Codex adapter submits
+#                    `/rename` before delivering that same input interactively
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
@@ -276,6 +279,10 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-codex-session-lib.sh
 . "$SCRIPT_DIR/fm-codex-session-lib.sh"
+# shellcheck source=bin/fm-display-title-lib.sh
+. "$SCRIPT_DIR/fm-display-title-lib.sh"
+# shellcheck source=bin/fm-codex-title-lib.sh
+. "$SCRIPT_DIR/fm-codex-title-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
@@ -1262,9 +1269,9 @@ launch_template() {
     claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox __CODEXINPUT__'
       else
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" __CODEXINPUT__'
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -1387,7 +1394,7 @@ if [ "$RESUME_CODEX_SET" -eq 1 ]; then
     exit 1
   }
   # shellcheck disable=SC2016 # substitutions run inside the task pane.
-  LAUNCH='codex resume __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" __CODEXSESSION__ "$(__OPINPUT__ encode resume-note < __RESUMENOTE__)"'
+  LAUNCH='codex resume __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" __CODEXSESSION__ __CODEXINPUT__'
 fi
 
 # muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
@@ -1845,6 +1852,26 @@ if [ "$KIND" != secondmate ]; then
     echo "error: brief $BRIEF records an external workspace route; pass its exact --workspace and --member instead of launching it as a legacy project positional" >&2
     exit 1
   fi
+fi
+
+# Presentation identity is explicit and independent of task/backend identity.
+# Fresh one-task spawns read it only from the scaffolded brief header. Relaunches
+# read only the already-published task metadata so editing a brief cannot drift a
+# stable worker title. Both fields absent is the supported legacy path; partial,
+# duplicate, or malformed metadata refuses before any launch bytes.
+PROJECT_CODE=
+TASK_LABEL=
+DISPLAY_METADATA_STATE=absent
+if [ "$RELAUNCH" -eq 1 ]; then
+  fm_display_task_metadata_read "$RELAUNCH_META" || exit 1
+  DISPLAY_METADATA_STATE=$FM_DISPLAY_METADATA_STATE
+  PROJECT_CODE=$FM_DISPLAY_PROJECT_CODE
+  TASK_LABEL=$FM_DISPLAY_TASK_LABEL
+elif [ "$KIND" != secondmate ]; then
+  fm_display_brief_metadata_read "$BRIEF" || exit 1
+  DISPLAY_METADATA_STATE=$FM_DISPLAY_METADATA_STATE
+  PROJECT_CODE=$FM_DISPLAY_PROJECT_CODE
+  TASK_LABEL=$FM_DISPLAY_TASK_LABEL
 fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
@@ -2851,7 +2878,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= -v tmux_keys="$TMUX_IDENTITY_META_KEYS" '
     BEGIN {
-      split("window endpoint_task_id worktree project workspace workspace_member harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project workspace workspace_member project_code task_label harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
       split(tmux_keys, keys, " ")
       for (i in keys) owned[keys[i]] = 1
@@ -2866,6 +2893,10 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   [ -z "$WORKSPACE_ID" ] || echo "workspace=$WORKSPACE_ID"
   [ -z "$WORKSPACE_MEMBER" ] || echo "workspace_member=$WORKSPACE_MEMBER"
+  if [ "$DISPLAY_METADATA_STATE" = present ]; then
+    echo "project_code=$PROJECT_CODE"
+    echo "task_label=$TASK_LABEL"
+  fi
   echo "harness=$HARNESS"
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
@@ -2949,10 +2980,32 @@ sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 sq_codex_session=$(shell_quote "$RESUME_CODEX_SESSION")
 sq_resume_note=$(shell_quote "$RESUME_NOTE_FILE")
+CODEX_DEFERRED_INPUT=0
+CODEX_INPUT_KIND=launch-brief
+CODEX_INPUT_FILE=$BRIEF_REAL
+CODEX_INPUT=
+case "$LAUNCH" in
+  *__CODEXINPUT__*)
+    if [ "$DISPLAY_METADATA_STATE" = present ]; then
+      CODEX_DEFERRED_INPUT=1
+      if [ "$RESUME_CODEX_SET" -eq 1 ]; then
+        CODEX_INPUT_KIND=resume-note
+        CODEX_INPUT_FILE=$RESUME_NOTE_FILE
+      fi
+    elif [ "$RESUME_CODEX_SET" -eq 1 ]; then
+      # shellcheck disable=SC2016 # template substitution must survive until the task pane shell.
+      CODEX_INPUT='"$(__OPINPUT__ encode resume-note < __RESUMENOTE__)"'
+    else
+      # shellcheck disable=SC2016 # template substitution must survive until the task pane shell.
+      CODEX_INPUT='"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+    fi
+    ;;
+esac
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
+LAUNCH=${LAUNCH//__CODEXINPUT__/$CODEX_INPUT}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
@@ -3161,6 +3214,15 @@ if [ "$BACKEND" = tmux ]; then
     fi
     exit 1
   }
+fi
+if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
+  if ! fm_codex_title_deliver \
+      "$BACKEND" "$T" "$W" "$CALLSIGN" "$PROJECT_CODE" "$TASK_LABEL" \
+      "$CODEX_INPUT_KIND" "$CODEX_INPUT_FILE"; then
+    printf 'failed: Codex conversation naming or initial task delivery was not confirmed\n' >> "$STATE/$ID.status"
+    echo "error: Codex conversation naming or initial task delivery was not confirmed; inspect window $T" >&2
+    exit 1
+  fi
 fi
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
