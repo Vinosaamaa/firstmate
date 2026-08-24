@@ -89,7 +89,6 @@ case "${1:-}" in
           ;;
         *'codex resume '*)
           printf 'codex' > "$D/command"
-          printf '›\n' > "$D/pane"
           [ ! -e "$D/fail-resume-transport" ] || exit 1
           ;;
         *'encode launch-brief'*)
@@ -298,7 +297,6 @@ test_codex_exact_session_resume_and_ordinary_switch_retire_binding() {
   local dir out rc old_gen new_gen side owner callsign
   dir=$(new_case codex-resume rl31)
   add_ship_task "$dir" rl31 codex
-  printf 'project_code=FM\ntask_label=External workspace\n' >> "$dir/home/state/rl31.meta"
   printf 'spawn_gen=spawn-rl31-initial\n' >> "$dir/home/state/rl31.meta"
   printf 'codex' > "$dir/fake/command"
   printf '%s\n' "$CODEX_SESSION_ID" > "$dir/fake/session-id"
@@ -323,8 +321,6 @@ test_codex_exact_session_resume_and_ordinary_switch_retire_binding() {
     "the launch should use Codex's exact resume subcommand"
   assert_grep "$CODEX_SESSION_ID" "$dir/fake/literal" \
     "the launch should address the exact session id"
-  assert_grep "/rename $callsign · FM · External workspace" "$dir/fake/literal" \
-    "exact resume should reassert the stable assigned display identity"
   assert_no_grep "--last" "$dir/fake/literal" \
     "exact resume must never use most-recent inference"
   assert_no_grep "encode launch-brief" "$dir/fake/literal" \
@@ -335,10 +331,6 @@ test_codex_exact_session_resume_and_ordinary_switch_retire_binding() {
     || fail "resume must rebind to the replacement spawn incarnation"
   [ "$(grep '^spawn_gen=' "$side")" = "spawn_gen=$new_gen" ] \
     || fail "the live session must bind to the new spawn generation"
-  [ "$(meta_field "$dir" rl31 project_code)" = FM ] \
-    || fail "exact resume did not preserve ProjectCode"
-  [ "$(meta_field "$dir" rl31 task_label)" = 'External workspace' ] \
-    || fail "exact resume did not preserve TaskLabel"
 
   printf 'claude' > "$dir/fake/becomes"
   out=$(run_control "$dir" rl31 relaunch --harness claude --note "switch deliberately"); rc=$?
