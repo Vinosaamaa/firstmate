@@ -295,6 +295,9 @@ Load `diagnostic-reasoning` before scoping a reported bug and before acting on a
 
 Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
 Pass the mode explicitly to the brief, and pass both values explicitly to the spawn and any scout promotion; each command refuses to guess the values it consumes.
+A ship or scout intake also resolves the project's explicit registered `ProjectCode` with `bin/fm-project-mode.sh --code` and assigns an explicit one- or two-word `TaskLabel` that makes the task understandable; pass both to `bin/fm-brief.sh` as `--project-code` and `--task-label`.
+Never derive either field from the raw task id or conversation text at spawn time, and never put live working/blocked state in the label.
+A one-task worker's label stays fixed across relaunch and exact resume; a deliberately reassigned long-lived worker may change only `task_label=`, never its callsign, project code, task id, or harness session UUID.
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
@@ -314,6 +317,7 @@ A persistent secondmate is recorded in the secondmate registry and runtime state
 Address workers by callsign in captain-facing language; exact task IDs remain the internal identity, and `bin/fm-identity-lib.sh` owns unambiguous names-first resolution.
 Steer a worker with ordinary text through fail-closed `fm-send`: the message becomes a durable record in the task's steering inbox (multi-line text is legal, local and remote alike) and the worker's terminal receives only a constant doorbell line, with the watcher re-ringing an unacknowledged local message and escalating a stuck one (`bin/fm-task-inbox-lib.sh`; `bin/fm-send.sh` owns the typed-plane carve-outs).
 A remote secondmate steer rides the same durable-inbox model through the remote transport; after an unconfirmed delivery, only the exact `FM_PENDING_REPLY_EXISTING_CORR=<id>` resend command printed by `fm-send` is safe because it preserves the request body for remote enqueue deduplication (`bin/fm-send.sh` header).
+Presentation surfaces consume the separate `project_code=` and `task_label=` metadata fields plus that callsign through `bin/fm-display-title-lib.sh`; the canonical title is `Callsign · ProjectCode · TaskLabel`, with the library's explicit ASCII fallback for surfaces that cannot render Unicode, and task-label-first truncation on narrow surfaces.
 When a steer answers an open keyed decision or blocker, pass `fm-send`'s `--resolve-key` so the answer itself closes that decision record at answer time, identically for local and remote workers (contract: `bin/fm-send.sh` header).
 `fm-send` is the data plane for text the worker should read; never use its key or text paths for interrupt, exit, or other lifecycle control, because routing-marked lifecycle text becomes chat the worker reasons about instead of executing.
 Drive a worker's lifecycle through `bin/fm-control.sh <callsign-or-task-id> interrupt|exit|relaunch`, which owns the per-runtime mechanics, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](docs/agent-control.md)).
@@ -518,6 +522,7 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 
 `bin/fm-brief.sh` and its help own scaffold syntax, generated variants, status protocol, delivery-mode definitions of done, and exact safety mechanics.
 Use its scaffold as the contract, then replace every `{TASK}` placeholder with a clear task description, acceptance criteria, constraints, and necessary context before dispatch or seeding.
+For ship and scout tasks, preserve the scaffolded `Firstmate project code:` and `Firstmate task label:` header fields exactly; they are intake metadata, not part of the replaceable task prose.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.

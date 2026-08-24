@@ -12,9 +12,11 @@
 # bin/fm-spawn.sh's advisory registry-deviation notice.
 #
 # Registry line format (data/projects.md):
-#   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
-#   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
-#   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
+#   - <name> - <desc> (added <date>)                                  -> legacy: no-mistakes off, no code
+#   - <name> [<mode>] [code=<CODE>] - <desc> (added <date>)            -> <mode> off, stable code
+#   - <name> [<mode> +yolo] [code=<CODE>] - <desc> (added <date>)      -> <mode> on, stable code
+# ProjectCode is a unique 2-8 character uppercase ASCII acronym beginning with a
+# letter. It is explicit project identity, not derived from the project name.
 #
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
@@ -31,10 +33,13 @@
 #
 # --raw prints the registered annotation unmapped, so a caller that must tell a
 # conditional policy apart from a flat mode sees "no-mistakes-prod-only" itself.
+# --code prints the registered ProjectCode only. A missing registry, project,
+# code, malformed code, or duplicate code is an error: presentation identity is
+# never guessed. Legacy posture resolution remains compatible and unchanged.
 #
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
 # to stderr, so a typo never silently drops the gate.
-# Usage: fm-project-mode.sh [--raw] <project-name>
+# Usage: fm-project-mode.sh [--raw|--code] <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,11 +48,53 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
 RAW=0
-if [ "${1:-}" = "--raw" ]; then
-  RAW=1
-  shift
+CODE=0
+case "${1:-}" in
+  --raw) RAW=1; shift ;;
+  --code) CODE=1; shift ;;
+esac
+NAME=${1:?usage: fm-project-mode.sh [--raw|--code] <project-name>}
+
+# shellcheck source=bin/fm-display-title-lib.sh
+. "$SCRIPT_DIR/fm-display-title-lib.sh"
+
+if [ "$CODE" -eq 1 ]; then
+  [ -f "$REG" ] || { echo "error: no project registry at $REG; cannot resolve a stable ProjectCode for $NAME" >&2; exit 1; }
+  project_line=$(awk -v n="$NAME" '$1 == "-" && $2 == n { print; found=1; exit } END { if (!found) exit 1 }' "$REG") || {
+    echo "error: project \"$NAME\" is not registered; cannot resolve its stable ProjectCode" >&2
+    exit 1
+  }
+  project_code=$(printf '%s\n' "$project_line" | awk '
+    {
+      for (i=3; i<=NF; i++) {
+        if ($i ~ /^\[code=[^]]+\]$/) {
+          value=$i; sub(/^\[code=/, "", value); sub(/\]$/, "", value)
+          count++; code=value
+        }
+      }
+    }
+    END { if (count == 1) print code; else exit 1 }
+  ') || {
+    echo "error: project \"$NAME\" has no single [code=<CODE>] annotation in $REG" >&2
+    exit 1
+  }
+  fm_display_project_code_valid "$project_code" || {
+    echo "error: project \"$NAME\" has invalid ProjectCode '$project_code'; expected 2-8 uppercase ASCII letters/digits beginning with a letter" >&2
+    exit 1
+  }
+  duplicates=$(awk -v wanted="[code=$project_code]" '
+    $1 == "-" {
+      for (i=3; i<=NF; i++) if ($i == wanted) { n++; names = names (names ? ", " : "") $2 }
+    }
+    END { if (n > 1) print names }
+  ' "$REG")
+  [ -z "$duplicates" ] || {
+    echo "error: ProjectCode '$project_code' is not unique in $REG (projects: $duplicates)" >&2
+    exit 1
+  }
+  printf '%s\n' "$project_code"
+  exit 0
 fi
-NAME=${1:?usage: fm-project-mode.sh [--raw] <project-name>}
 
 if [ ! -f "$REG" ]; then
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
