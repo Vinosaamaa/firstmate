@@ -2,8 +2,8 @@
 name: project-management
 description: >-
   Agent-only procedure for Firstmate project management.
-  Use before adding, creating, removing, or initializing a project.
-  Cloning or registering a project is add intake and uses the same trigger.
+  Use before adding, creating, removing, or initializing a project or registering, resolving, or unregistering an external workspace.
+  Cloning or registering a project or workspace is add intake and uses the same trigger.
   Owns project add, create, clone, remove, initialization, registry, delivery-mode, autonomy, and outward-consent decisions.
 user-invocable: false
 metadata:
@@ -12,8 +12,8 @@ metadata:
 
 # project-management
 
-Use this procedure before adding, creating, removing, or initializing a project.
-Cloning or registering a project is add intake and uses the same trigger.
+Use this procedure before adding, creating, removing, or initializing a project or registering, resolving, or unregistering an external workspace.
+Cloning or registering a project or workspace is add intake and uses the same trigger.
 This skill is the single owner of Firstmate's project-management procedure.
 It does not replace `secondmate-provisioning`, which owns project clones inside persistent secondmate homes.
 
@@ -23,15 +23,48 @@ Projects live flat under `projects/`, and `data/projects.md` is the private flee
 Use the registry format and parser contract owned by the header of `bin/fm-project-mode.sh`.
 Keep each registry description useful for identifying the project, but keep delivery posture, captain-private state, and detailed project knowledge in their existing designated homes.
 Do not turn the registry into project documentation.
+Every newly registered project also receives one explicit stable `ProjectCode` in the parser-owned `[code=<CODE>]` annotation.
+Resolve a unique 2-8 character uppercase ASCII acronym with the captain during add/create intake; never derive it later from a directory, repository, task id, or conversation.
+Existing legacy entries without a code remain readable for delivery posture, but `bin/fm-project-mode.sh --code` refuses them so the registration gap is visible before title-aware task intake.
 
 Before adding, cloning, creating, or registering any project in the main home, inspect the authoritative `data/secondmates.md` routing table and judge every existing natural-language `scope:` against the proposed project or domain.
 Apply `AGENTS.md` section 7's authoritative secondmate routing rules; if an existing scope owns that domain, route the new-project operation or work there instead of creating or registering a duplicate main-home clone.
 Absence from the main `data/projects.md` registry is never evidence that no second mate owns the domain.
 If the owning second mate cannot accept the route, report that concrete blocker or obtain an explicit captain redirection rather than silently duplicating the project in the main home.
 
-Resolve the project name, destination, delivery posture, and autonomy posture before changing local or remote state.
+Resolve the project name, ProjectCode, destination, delivery posture, and autonomy posture before changing local or remote state.
 Keep a newly added clone and its registry entry consistent, and roll back only artifacts created by the incomplete operation when a later initialization step fails and that rollback is safe.
 Do not overwrite or repurpose an existing path.
+
+## Register or route an external workspace
+
+An external workspace is a private pointer to one existing organizational directory plus explicit member Git repositories.
+It is separate from the managed-clone registry: `projects/` and `data/projects.md` retain their current behavior, and registration never creates a clone or project-registry line.
+The header and `--help` of `bin/fm-workspace.sh` own the exact manifest schema, flags, canonicalization, drift checks, atomic publication, and pointer-only removal mechanics.
+
+Before registration, apply the secondmate-scope intake above to the proposed workspace domain.
+Resolve a stable workspace id, one concise natural-language routing scope, the existing absolute outer root, the ordered outer instruction roots if any, and every explicit member identity and Git root.
+Use `--member` for a member contained by the outer root and `--external-member` only for a deliberately declared repository outside it.
+Never discover members by walking the outer directory, because registration is an explicit ownership decision rather than a filesystem scrape.
+Never initialize the outer root or a member, and never copy, move, flatten, or clone anything during this operation.
+
+Outer instruction roots are optional.
+When supplied, each root contributes its exact `AGENTS.md` content in registration order after the manifest's path and content commitment validates.
+That context is broader than the selected repository: the member worktree's own `AGENTS.md` and every more deeply nested instruction file remain authoritative on conflict.
+If an instruction or path drifts, normal listing and routing fail closed until the workspace is deliberately re-registered or safely unregistered.
+
+At work intake, select the logical workspace first and one explicit member identity second.
+Scaffold the task with matching `--workspace` and `--member` arguments to `bin/fm-brief.sh`, then spawn it with the same arguments to `bin/fm-spawn.sh`.
+The brief receives the validated instruction snapshot, and spawn resolves only the selected member Git root into the existing isolated-worktree lifecycle.
+The outer root is never a task cwd, primary checkout, or worktree source.
+The registry and route are backend-neutral: every supported primary harness receives the same brief, tmux, Herdr, Zellij, and cmux continue through Treehouse, and Orca continues through its own isolated worktree provider.
+
+Cross-repository implementation remains separate linked tasks, one explicitly selected member and one isolated worktree per task.
+Do not use batch dispatch to collapse workspace members, invent a shared multi-repository worktree, add secondary primary checkouts to a worker, or let a worker mutate any member's registered primary checkout.
+Editing non-Git files in the outer root and registering a zero-member workspace are unsupported in this slice because neither has the existing isolated-task preservation and cleanup lifecycle.
+
+Unregister only after the captain concretely approves the exact workspace id.
+Use the command's repeated-id confirmation; it removes only the private pointer record even when an external path has drifted, and it never deletes or edits the outer root, instruction files, or repositories.
 
 ## Delivery posture
 
@@ -54,7 +87,7 @@ Default it off for every project and every posture, and enable it only on the ca
 
 ## Add or clone an existing project
 
-Confirm the source URL, local project name, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
+Confirm the source URL, local project name, ProjectCode, delivery posture, and autonomy posture, stating the resolved default for each rather than asking the captain to invent one.
 Clone into `projects/<name>` and add the registry entry only after the destination is known to be unused.
 A `no-mistakes` or `no-mistakes-prod-only` project must have an `origin` remote and must complete the initialization procedure below, because a conditional policy's product-facing work runs the pipeline while its internal-only work still takes the direct PR.
 A `direct-PR` project needs an `origin` remote but skips no-mistakes initialization.
@@ -63,7 +96,7 @@ A `local-only` project may have no remote and skips no-mistakes initialization.
 ## Create a project
 
 Creating a GitHub repository is outward-facing.
-Before making that remote change, propose the repository name, owner or organization, visibility, and delivery posture, defaulting visibility to private and the posture to `no-mistakes-prod-only`, then obtain the captain's explicit consent for those exact values; a stated default never replaces that consent.
+Before making that remote change, propose the repository name, ProjectCode, owner or organization, visibility, and delivery posture, defaulting visibility to private and the posture to `no-mistakes-prod-only`, then obtain the captain's explicit consent for those exact values; a stated default never replaces that consent.
 Use `gh-axi` for the approved GitHub operation and consult its current help rather than relying on remembered flags.
 After remote creation succeeds, clone it locally, add the registry entry, and initialize it according to its delivery posture.
 

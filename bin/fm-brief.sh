@@ -6,8 +6,12 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only>
+#            [--project-code <CODE> --task-label <one-or-two-words>]
+#            [--workspace <workspace-id> --member <member-id>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout
+#            [--project-code <CODE> --task-label <one-or-two-words>]
+#            [--workspace <workspace-id> --member <member-id>] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -27,6 +31,11 @@
 #   The flag must be explicit because {TASK} is filled after scaffolding and the
 #   caller-supplied repo string cannot reliably identify this repo. Briefs made
 #   without it carry a loud declaration so an omitted contract cannot be silent.
+#   --project-code and --task-label are explicit presentation identity metadata.
+#   They are required together for title-aware ship/scout intake. ProjectCode is
+#   the stable registered acronym resolved by `fm-project-mode.sh --code`; TaskLabel
+#   is a deliberate one- or two-word intake label, never inferred from task prose
+#   or the raw task id. Both absent preserves legacy brief compatibility.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never reads it:
@@ -58,6 +67,11 @@
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
 # Refuses to overwrite an existing brief.
+# `--workspace` and `--member` are an inseparable explicit route for an external
+# workspace registered by bin/fm-workspace.sh. The repo-name positional must be
+# that member id. The scaffold snapshots the validated ordered outer instruction
+# context into the brief, records a machine-readable route and canonical member
+# Git root, and leaves nested member-repository AGENTS.md authority intact.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -78,6 +92,8 @@ esac
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-display-title-lib.sh
+. "$SCRIPT_DIR/fm-display-title-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -109,6 +125,14 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+WORKSPACE_ID=
+WORKSPACE_MEMBER=
+WORKSPACE_SET=0
+WORKSPACE_MEMBER_SET=0
+PROJECT_CODE=
+PROJECT_CODE_SET=0
+TASK_LABEL=
+TASK_LABEL_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -118,6 +142,10 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      workspace) WORKSPACE_ID=$a; WORKSPACE_SET=1 ;;
+      member) WORKSPACE_MEMBER=$a; WORKSPACE_MEMBER_SET=1 ;;
+      project-code) PROJECT_CODE=$a; PROJECT_CODE_SET=1 ;;
+      task-label) TASK_LABEL=$a; TASK_LABEL_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -130,6 +158,14 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --workspace) want_value=workspace ;;
+    --workspace=*) WORKSPACE_ID=${a#--workspace=}; WORKSPACE_SET=1 ;;
+    --member) want_value=member ;;
+    --member=*) WORKSPACE_MEMBER=${a#--member=}; WORKSPACE_MEMBER_SET=1 ;;
+    --project-code) want_value='project-code' ;;
+    --project-code=*) PROJECT_CODE=${a#--project-code=}; PROJECT_CODE_SET=1 ;;
+    --task-label) want_value='task-label' ;;
+    --task-label=*) TASK_LABEL=${a#--task-label=}; TASK_LABEL_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -138,6 +174,31 @@ for a in "$@"; do
   esac
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
+[ "$WORKSPACE_SET" -eq "$WORKSPACE_MEMBER_SET" ] || {
+  echo "error: --workspace and --member are required together" >&2
+  exit 1
+}
+[ "$WORKSPACE_SET" -eq 0 ] || [ -n "$WORKSPACE_ID" ] || { echo "error: --workspace requires a non-empty value" >&2; exit 1; }
+[ "$WORKSPACE_MEMBER_SET" -eq 0 ] || [ -n "$WORKSPACE_MEMBER" ] || { echo "error: --member requires a non-empty value" >&2; exit 1; }
+
+if [ "$KIND" = secondmate ]; then
+  [ "$PROJECT_CODE_SET" -eq 0 ] && [ "$TASK_LABEL_SET" -eq 0 ] || {
+    echo "error: --project-code/--task-label apply only to one-task ship or scout briefs, not persistent secondmate charters" >&2
+    exit 1
+  }
+elif [ "$PROJECT_CODE_SET" -ne "$TASK_LABEL_SET" ]; then
+  echo "error: --project-code and --task-label are required together; never guess one presentation identity field from another" >&2
+  exit 1
+elif [ "$PROJECT_CODE_SET" -eq 1 ]; then
+  fm_display_project_code_valid "$PROJECT_CODE" || {
+    echo "error: --project-code must be 2-8 uppercase ASCII letters/digits beginning with a letter" >&2
+    exit 1
+  }
+  fm_display_task_label_valid "$TASK_LABEL" || {
+    echo "error: --task-label must be one or two words with no surrounding/repeated spaces or middle dots" >&2
+    exit 1
+  }
+fi
 
 # Ship delivery mode is an explicit per-task decision (AGENTS.md section 7). A
 # missing or invalid value stops the scaffold rather than silently defaulting.
@@ -161,6 +222,11 @@ ID=${POS[0]}
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
+  exit 1
+fi
+
+if [ "$KIND" = secondmate ] && [ "$WORKSPACE_SET" -eq 1 ]; then
+  echo "error: --workspace/--member apply only to ordinary ship or scout tasks; secondmate workspace ownership is a separate product slice" >&2
   exit 1
 fi
 
@@ -194,6 +260,14 @@ When a terminal message says an instruction is waiting there - and at any natura
 The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.
 EOF
 INBOX_SECTION=${INBOX_SECTION%$'\n'}
+
+DISPLAY_METADATA=
+if [ "$PROJECT_CODE_SET" -eq 1 ]; then
+  DISPLAY_METADATA="Firstmate project code: $PROJECT_CODE
+Firstmate task label: $TASK_LABEL
+
+"
+fi
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -284,7 +358,21 @@ fi
 exit 0
 fi
 
-REPO=${POS[1]}
+REPO=${POS[1]:-}
+[ -n "$REPO" ] || { echo "error: ship and scout briefs require a repo-name positional" >&2; exit 1; }
+WORKSPACE_SECTION=
+if [ "$WORKSPACE_SET" -eq 1 ]; then
+  [ "$REPO" = "$WORKSPACE_MEMBER" ] || {
+    echo "error: repo-name '$REPO' must equal the selected workspace member id '$WORKSPACE_MEMBER'" >&2
+    exit 1
+  }
+  WORKSPACE_REPOSITORY=$("$FM_ROOT/bin/fm-workspace.sh" resolve "$WORKSPACE_ID" "$WORKSPACE_MEMBER" --path) || exit 1
+  WORKSPACE_CONTEXT=$("$FM_ROOT/bin/fm-workspace.sh" resolve "$WORKSPACE_ID" "$WORKSPACE_MEMBER" --context) || exit 1
+  WORKSPACE_SECTION="Workspace route: workspace=$WORKSPACE_ID member=$WORKSPACE_MEMBER
+Workspace repository: $WORKSPACE_REPOSITORY
+
+$WORKSPACE_CONTEXT"
+fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -322,8 +410,10 @@ if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
+$DISPLAY_METADATA# Task
 {TASK}
+
+$WORKSPACE_SECTION
 
 $HERDR_SECTION
 
@@ -435,8 +525,10 @@ DOD=${DOD%$'\n'}
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
-# Task
+$DISPLAY_METADATA# Task
 {TASK}
+
+$WORKSPACE_SECTION
 
 $HERDR_SECTION
 

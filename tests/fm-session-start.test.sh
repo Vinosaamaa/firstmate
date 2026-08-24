@@ -724,16 +724,47 @@ EOF
   assert_contains "$out" "data/secondmates.md" "digest did not label the secondmates.md section"
   assert_contains "$out" "data/learnings.md" "digest did not label the learnings.md section"
 
-  # Exactly four context ABSENT markers (secondmates.md, captain-shared.md,
-  # learnings.md; backlog.md is covered by its own test) - and the
+  # Exactly five context ABSENT markers (workspaces/, secondmates.md,
+  # captain-shared.md, learnings.md; backlog.md is covered by its own test) - and the
   # present-but-empty captain.md must NOT print ABSENT.
   absent_count=$(printf '%s\n' "$out" | grep -c '^ABSENT$')
-  [ "$absent_count" -eq 4 ] || fail "expected 4 ABSENT markers (secondmates.md, captain-shared.md, learnings.md, backlog.md), got $absent_count: $out"
+  [ "$absent_count" -eq 5 ] || fail "expected 5 ABSENT markers (workspaces/, secondmates.md, captain-shared.md, learnings.md, backlog.md), got $absent_count: $out"
 
   cap_section=$(printf '%s\n' "$out" | awk '/^data\/captain\.md$/{flag=1;next}/^data\//{flag=0}flag')
   assert_contains "$cap_section" "(present, empty)" "empty-but-present captain.md was not distinguished from ABSENT"
 
   pass "context digest distinguishes ABSENT, empty-but-present, and populated files"
+}
+
+test_context_digest_lists_validated_external_workspaces() {
+  local rec root home fakebin outer out
+  rec=$(new_world context-workspaces)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  outer="$TMP_ROOT/context-workspaces/external-domain"
+  mkdir -p "$outer"
+  outer=$(cd "$outer" && pwd -P)
+  fm_git_init_commit "$outer/member-one"
+  fm_git_init_commit "$outer/member-two"
+  fm_git_init_commit "$outer/member-three"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-workspace.sh" add visible-domain \
+    --root "$outer" --scope 'Visible external domain.' \
+    --member "one=$outer/member-one" \
+    --member "two=$outer/member-two" \
+    --member "three=$outer/member-three" >/dev/null
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "data/workspaces/ (validated external workspace pointers)" \
+    "context digest did not label external workspace visibility"
+  assert_contains "$out" $'visible-domain\t' \
+    "context digest did not list the registered logical workspace"
+  assert_contains "$out" $'one,two,three\tVisible external domain.' \
+    "context digest did not expose explicit member identities and routing scope"
+  pass "session start discovers validated external workspace pointers without transcript scraping"
 }
 
 # --- lock refusal: read-only path --------------------------------------------
@@ -2457,6 +2488,7 @@ EOF
 }
 
 test_context_digest_absent_empty_present
+test_context_digest_lists_validated_external_workspaces
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock

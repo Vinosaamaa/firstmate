@@ -3,6 +3,8 @@
 # secondmate in its isolated firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> --workspace <workspace-id> --member <member-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> --workspace <workspace-id> --member <member-id> --scout [--harness <name>] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -56,6 +58,15 @@
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
 #   blocked backend contract. Default tmux spawns do not write backend= to meta;
 #   absent backend= means tmux. cmux does not support --secondmate spawns yet.
+#   An external workspace route is resolved by bin/fm-workspace.sh before any
+#   endpoint is created. --workspace and --member are required together and
+#   replace the project-dir positional for one non-batch ship or scout spawn.
+#   The selected canonical member Git root then enters the same backend-neutral
+#   isolated-worktree lifecycle as a managed clone: tmux, herdr, zellij, and
+#   cmux use treehouse; Orca uses its own worktree provider. The outer workspace
+#   root never becomes a cwd, worktree source, or writable task root. The route
+#   is recorded in task metadata and revalidated on relaunch, while the brief's
+#   recorded route must match the spawn flags.
 #   A backend spawn refusal (missing dependency, version gate, unauthenticated
 #   socket, or unsupported secondmate mode) is terminal for that selected backend;
 #   callers must surface it instead of silently retrying another backend.
@@ -162,6 +173,9 @@
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 #     __WORKTREE__  absolute path to the task worktree
 #     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
+#     __CODEXINPUT__ Codex positional operational input on legacy briefs; empty
+#                    for title-aware briefs because the Codex adapter submits
+#                    `/rename` before delivering that same input interactively
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
@@ -265,6 +279,10 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-codex-session-lib.sh
 . "$SCRIPT_DIR/fm-codex-session-lib.sh"
+# shellcheck source=bin/fm-display-title-lib.sh
+. "$SCRIPT_DIR/fm-display-title-lib.sh"
+# shellcheck source=bin/fm-codex-title-lib.sh
+. "$SCRIPT_DIR/fm-codex-title-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
@@ -294,6 +312,8 @@ YOLO=
 TRACEPARENT_ARG=
 RESUME_CODEX_SESSION=
 RESUME_NOTE_FILE=
+WORKSPACE_ID=
+WORKSPACE_MEMBER=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
@@ -303,6 +323,8 @@ YOLO_SET=0
 TRACEPARENT_SET=0
 RESUME_CODEX_SET=0
 RESUME_NOTE_SET=0
+WORKSPACE_SET=0
+WORKSPACE_MEMBER_SET=0
 RELAUNCH=0
 POS=()
 want_value=
@@ -321,6 +343,8 @@ for a in "$@"; do
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
       resume-codex-session) RESUME_CODEX_SESSION=$a; RESUME_CODEX_SET=1 ;;
       resume-note-file) RESUME_NOTE_FILE=$a; RESUME_NOTE_SET=1 ;;
+      workspace) WORKSPACE_ID=$a; WORKSPACE_SET=1 ;;
+      member) WORKSPACE_MEMBER=$a; WORKSPACE_MEMBER_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -348,6 +372,10 @@ for a in "$@"; do
     --resume-codex-session=*) RESUME_CODEX_SESSION=${a#--resume-codex-session=}; RESUME_CODEX_SET=1 ;;
     --resume-note-file) want_value=resume-note-file ;;
     --resume-note-file=*) RESUME_NOTE_FILE=${a#--resume-note-file=}; RESUME_NOTE_SET=1 ;;
+    --workspace) want_value=workspace ;;
+    --workspace=*) WORKSPACE_ID=${a#--workspace=}; WORKSPACE_SET=1 ;;
+    --member) want_value=member ;;
+    --member=*) WORKSPACE_MEMBER=${a#--member=}; WORKSPACE_MEMBER_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -365,6 +393,12 @@ done
   || { echo "error: --resume-note-file must name a readable file" >&2; exit 1; }
 [ "$RESUME_CODEX_SET" -eq "$RESUME_NOTE_SET" ] \
   || { echo "error: --resume-codex-session and --resume-note-file are required together" >&2; exit 1; }
+[ "$WORKSPACE_SET" -eq "$WORKSPACE_MEMBER_SET" ] \
+  || { echo "error: --workspace and --member are required together" >&2; exit 1; }
+[ "$WORKSPACE_SET" -eq 0 ] || [ -n "$WORKSPACE_ID" ] \
+  || { echo "error: --workspace requires a non-empty value" >&2; exit 1; }
+[ "$WORKSPACE_MEMBER_SET" -eq 0 ] || [ -n "$WORKSPACE_MEMBER" ] \
+  || { echo "error: --member requires a non-empty value" >&2; exit 1; }
 [ "$RESUME_CODEX_SET" -eq 0 ] || [ "$RELAUNCH" -eq 1 ] \
   || { echo "error: exact Codex resume is available only inside --relaunch" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
@@ -380,6 +414,10 @@ if [ "$TRACEPARENT_SET" -eq 1 ]; then
     exit 1
   }
 fi
+if [ "$WORKSPACE_SET" -eq 1 ] && [ "$KIND" = secondmate ]; then
+  echo "error: --workspace/--member apply only to ordinary ship or scout tasks; secondmate workspace ownership is a separate product slice" >&2
+  exit 1
+fi
 case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
@@ -394,6 +432,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
+  [ "$WORKSPACE_SET" -eq 0 ] || { echo "error: --relaunch reuses and revalidates the task's recorded workspace route; --workspace/--member cannot override it" >&2; exit 1; }
 else
   # Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
   # firstmate's per-task decision, so they are required and closed-set validated
@@ -923,6 +962,10 @@ if [ "$RELAUNCH" -eq 1 ] && [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart"
   exit 1
 fi
 if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in */*) false ;; *) true ;; esac; then
+  if [ "$WORKSPACE_SET" -eq 1 ]; then
+    echo "error: batch dispatch does not accept one shared --workspace/--member route; cross-repository workspace work must use separately linked explicit member tasks" >&2
+    exit 1
+  fi
   if [ "$KIND" != secondmate ] && [ -z "$HARNESS_ARG" ] && [ -f "$CONFIG/crew-dispatch.json" ]; then
     echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
     exit 1
@@ -1127,6 +1170,23 @@ if [ "$RELAUNCH" -eq 1 ]; then
       echo "error: task $ID has no recorded project; refusing to relaunch" >&2
       exit 1
     }
+    WORKSPACE_ID=$(fm_meta_get "$RELAUNCH_META" workspace)
+    WORKSPACE_MEMBER=$(fm_meta_get "$RELAUNCH_META" workspace_member)
+    if { [ -n "$WORKSPACE_ID" ] && [ -z "$WORKSPACE_MEMBER" ]; } \
+      || { [ -z "$WORKSPACE_ID" ] && [ -n "$WORKSPACE_MEMBER" ]; }; then
+      echo "error: task $ID has an incomplete recorded workspace route; refusing to relaunch" >&2
+      exit 1
+    fi
+    if [ -n "$WORKSPACE_ID" ]; then
+      WORKSPACE_REPOSITORY=$("$FM_ROOT/bin/fm-workspace.sh" resolve "$WORKSPACE_ID" "$WORKSPACE_MEMBER" --path) || {
+        echo "error: task $ID's recorded workspace route no longer validates; refusing to relaunch" >&2
+        exit 1
+      }
+      [ "$WORKSPACE_REPOSITORY" = "$PROJ" ] || {
+        echo "error: task $ID's workspace route resolves to '$WORKSPACE_REPOSITORY', not its recorded project '$PROJ'; refusing to relaunch" >&2
+        exit 1
+      }
+    fi
   fi
   if [ "$BACKEND" = herdr ]; then
     HERDR_SES=$(fm_meta_get "$RELAUNCH_META" herdr_session)
@@ -1164,8 +1224,17 @@ elif [ "$KIND" = secondmate ]; then
       ;;
   esac
 else
-  PROJ=${POS[1]}
-  ARG3=${POS[2]:-}
+  if [ "$WORKSPACE_SET" -eq 1 ]; then
+    [ "${#POS[@]}" -eq 1 ] || {
+      echo "error: --workspace/--member replace the project-dir positional; pass only the task id and use --harness for an explicit adapter" >&2
+      exit 1
+    }
+    PROJ=$("$FM_ROOT/bin/fm-workspace.sh" resolve "$WORKSPACE_ID" "$WORKSPACE_MEMBER" --path) || exit 1
+    ARG3=
+  else
+    PROJ=${POS[1]}
+    ARG3=${POS[2]:-}
+  fi
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
 
@@ -1215,9 +1284,9 @@ launch_template() {
     claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox __CODEXINPUT__'
       else
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" __CODEXINPUT__'
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -1340,7 +1409,7 @@ if [ "$RESUME_CODEX_SET" -eq 1 ]; then
     exit 1
   }
   # shellcheck disable=SC2016 # substitutions run inside the task pane.
-  LAUNCH='codex resume __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" __CODEXSESSION__ "$(__OPINPUT__ encode resume-note < __RESUMENOTE__)"'
+  LAUNCH='codex resume __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" __CODEXSESSION__ __CODEXINPUT__'
 fi
 
 # muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
@@ -1770,6 +1839,56 @@ else
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 
+# Workspace-route agreement is the external equivalent of delivery-mode
+# agreement below. The private manifest chooses a logical workspace first and
+# one explicit member second; the brief snapshots that route and the spawn must
+# use the same validated repository. A route-bearing brief launched through the
+# legacy project positional would silently drop outer context provenance, so it
+# is refused rather than treated as an ordinary absolute project path.
+if [ "$KIND" != secondmate ]; then
+  BRIEF_WORKSPACE_ROUTE_COUNT=$(grep -c '^Workspace route: workspace=[^ ]* member=[^ ]*$' "$BRIEF" 2>/dev/null || true)
+  BRIEF_WORKSPACE_REPOSITORY_COUNT=$(grep -c '^Workspace repository: ' "$BRIEF" 2>/dev/null || true)
+  if [ -n "$WORKSPACE_ID" ]; then
+    [ "$BRIEF_WORKSPACE_ROUTE_COUNT" -eq 1 ] && [ "$BRIEF_WORKSPACE_REPOSITORY_COUNT" -eq 1 ] || {
+      echo "error: workspace task $ID's brief must record exactly one workspace route and repository line" >&2
+      exit 1
+    }
+    BRIEF_WORKSPACE_ROUTE=$(sed -n 's/^Workspace route: workspace=\([^ ]*\) member=\([^ ]*\)$/\1 \2/p' "$BRIEF")
+    BRIEF_WORKSPACE_REPOSITORY=$(sed -n 's/^Workspace repository: //p' "$BRIEF")
+    [ "$BRIEF_WORKSPACE_ROUTE" = "$WORKSPACE_ID $WORKSPACE_MEMBER" ] || {
+      echo "error: workspace route mismatch for $ID: the brief says '$BRIEF_WORKSPACE_ROUTE', but the spawn resolved '$WORKSPACE_ID $WORKSPACE_MEMBER'" >&2
+      exit 1
+    }
+    [ "$BRIEF_WORKSPACE_REPOSITORY" = "$PROJ" ] || {
+      echo "error: workspace repository mismatch for $ID: the brief says '$BRIEF_WORKSPACE_REPOSITORY', but the manifest resolves '$PROJ'" >&2
+      exit 1
+    }
+  elif [ "$BRIEF_WORKSPACE_ROUTE_COUNT" -ne 0 ] || [ "$BRIEF_WORKSPACE_REPOSITORY_COUNT" -ne 0 ]; then
+    echo "error: brief $BRIEF records an external workspace route; pass its exact --workspace and --member instead of launching it as a legacy project positional" >&2
+    exit 1
+  fi
+fi
+
+# Presentation identity is explicit and independent of task/backend identity.
+# Fresh one-task spawns read it only from the scaffolded brief header. Relaunches
+# read only the already-published task metadata so editing a brief cannot drift a
+# stable worker title. Both fields absent is the supported legacy path; partial,
+# duplicate, or malformed metadata refuses before any launch bytes.
+PROJECT_CODE=
+TASK_LABEL=
+DISPLAY_METADATA_STATE=absent
+if [ "$RELAUNCH" -eq 1 ]; then
+  fm_display_task_metadata_read "$RELAUNCH_META" || exit 1
+  DISPLAY_METADATA_STATE=$FM_DISPLAY_METADATA_STATE
+  PROJECT_CODE=$FM_DISPLAY_PROJECT_CODE
+  TASK_LABEL=$FM_DISPLAY_TASK_LABEL
+elif [ "$KIND" != secondmate ]; then
+  fm_display_brief_metadata_read "$BRIEF" || exit 1
+  DISPLAY_METADATA_STATE=$FM_DISPLAY_METADATA_STATE
+  PROJECT_CODE=$FM_DISPLAY_PROJECT_CODE
+  TASK_LABEL=$FM_DISPLAY_TASK_LABEL
+fi
+
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
     no-mistakes) echo 3 ;;
@@ -1784,7 +1903,7 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
 # line. A spawn that disagrees would launch a worker whose instructions and whose
 # recorded task delivery differ, which is the exact drift this contract prevents.
 if [ "$KIND" = ship ]; then
-  PROJ_NAME=$(basename "$PROJ_ABS")
+  PROJ_NAME=${WORKSPACE_MEMBER:-$(basename "$PROJ_ABS")}
   BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
   if [ -z "$BRIEF_MODE" ]; then
     echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
@@ -2774,7 +2893,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= -v tmux_keys="$TMUX_IDENTITY_META_KEYS" '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project workspace workspace_member project_code task_label harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
       split(tmux_keys, keys, " ")
       for (i in keys) owned[keys[i]] = 1
@@ -2787,6 +2906,12 @@ preserve_relaunch_meta() {
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
+  [ -z "$WORKSPACE_ID" ] || echo "workspace=$WORKSPACE_ID"
+  [ -z "$WORKSPACE_MEMBER" ] || echo "workspace_member=$WORKSPACE_MEMBER"
+  if [ "$DISPLAY_METADATA_STATE" = present ]; then
+    echo "project_code=$PROJECT_CODE"
+    echo "task_label=$TASK_LABEL"
+  fi
   echo "harness=$HARNESS"
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
@@ -2875,10 +3000,32 @@ sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 sq_codex_session=$(shell_quote "$RESUME_CODEX_SESSION")
 sq_resume_note=$(shell_quote "$RESUME_NOTE_FILE")
+CODEX_DEFERRED_INPUT=0
+CODEX_INPUT_KIND=launch-brief
+CODEX_INPUT_FILE=$BRIEF_REAL
+CODEX_INPUT=
+case "$LAUNCH" in
+  *__CODEXINPUT__*)
+    if [ "$DISPLAY_METADATA_STATE" = present ]; then
+      CODEX_DEFERRED_INPUT=1
+      if [ "$RESUME_CODEX_SET" -eq 1 ]; then
+        CODEX_INPUT_KIND=resume-note
+        CODEX_INPUT_FILE=$RESUME_NOTE_FILE
+      fi
+    elif [ "$RESUME_CODEX_SET" -eq 1 ]; then
+      # shellcheck disable=SC2016 # template substitution must survive until the task pane shell.
+      CODEX_INPUT='"$(__OPINPUT__ encode resume-note < __RESUMENOTE__)"'
+    else
+      # shellcheck disable=SC2016 # template substitution must survive until the task pane shell.
+      CODEX_INPUT='"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+    fi
+    ;;
+esac
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
+LAUNCH=${LAUNCH//__CODEXINPUT__/$CODEX_INPUT}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
@@ -3093,6 +3240,15 @@ if [ "$BACKEND" = tmux ]; then
     else
       echo "error: task $ID launched, but its persistent identity could not be activated; cleanup is incomplete and fail-closed metadata was retained" >&2
     fi
+    exit 1
+  fi
+fi
+if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
+  if ! fm_codex_title_deliver \
+      "$BACKEND" "$T" "$W" "$CALLSIGN" "$PROJECT_CODE" "$TASK_LABEL" \
+      "$CODEX_INPUT_KIND" "$CODEX_INPUT_FILE"; then
+    printf 'failed: Codex conversation naming or initial task delivery was not confirmed\n' >> "$STATE/$ID.status"
+    echo "error: Codex conversation naming or initial task delivery was not confirmed; inspect window $T" >&2
     exit 1
   fi
 fi

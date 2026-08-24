@@ -10,7 +10,7 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
-`data/` holds durable private fleet records such as the Firstmate and crew identity records, project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, and scout reports.
+`data/` holds durable private fleet records such as the Firstmate and crew identity records, project, external-workspace, and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, and scout reports.
 `state/` holds runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, inactive terminal-outcome receipts under `state/terminal-outcomes/`, away-mode state, generated Relay artifacts, private secondmate config-reread generations with their retry and quarantine state, per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`), and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
 Untracked files and directories whose names begin with `scratchpad` are also gitignored, so temporary scratch does not make porcelain-based secondmate sync guards treat a home as dirty.
@@ -24,6 +24,28 @@ Wake, watcher, away-mode, and Relay-specific state mechanics remain with their n
 `docs/sessionstart-nudge.md` owns the native session-open adapter tiers that run or nudge the digest command, and the source routing between them.
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
+
+## External workspace pointers (data/workspaces/)
+
+An external workspace registers one logical domain without turning its outer organizational directory into a managed clone or Git repository.
+Each private record points at one existing canonical absolute outer root and names one or more explicit member Git roots.
+The outer root may contain no ordinary files and is never copied, moved, cloned, initialized, or used as a writable task root.
+Existing clones under `projects/` and their `data/projects.md` delivery postures are unchanged.
+
+Use `bin/fm-workspace.sh add` or its `register` alias to register a pointer, `list` and `show` to inspect it, `resolve` to select one member, and `remove` or `unregister` with the exact repeated-id confirmation to remove it.
+Read `bin/fm-workspace.sh --help` before operating it because that executable owns the exact record format, flags, canonical-path checks, member containment declaration, instruction commitments, atomic writes, and removal mechanics.
+The project-management procedure owns the required intake judgment, secondmate-scope check, and captain authority for unregistering.
+
+Optional instruction roots are existing outer directories whose real `AGENTS.md` files are committed by path, order, and SHA-256 in the private manifest.
+Brief scaffolding copies that validated context into a workspace-routed task in registration order and states that the selected member repository's own nested `AGENTS.md` files remain authoritative on conflict.
+A missing, relocated, symlinked, or content-drifted instruction file, a changed member path, a non-Git member, a duplicate route, or a malformed record makes normal listing and resolution fail closed.
+Session start prints the validated workspace list in its context digest, or an `INVALID` diagnostic when the registry cannot be trusted, so the primary can discover routes without transcript scraping.
+
+Workspace intake is explicit on both axes: pass matching `--workspace <workspace-id> --member <member-id>` arguments to `bin/fm-brief.sh` and `bin/fm-spawn.sh`.
+Spawn resolves the chosen canonical member Git root and then uses the ordinary backend-neutral isolated-worktree lifecycle.
+Cross-repository implementation uses separately linked tasks, one member repository and worktree per task.
+Shared multi-repository worktrees, worker mutation of registered primary checkouts, non-Git outer-file editing, and zero-member workspaces are unsupported in this focused slice.
+Unregister removes only the private record under `data/workspaces/`; it never deletes the external root, instruction files, or member repositories, including when those external paths have drifted.
 
 ## Pi Calm preference (config/calm)
 
