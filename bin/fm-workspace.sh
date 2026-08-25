@@ -1002,8 +1002,11 @@ command_release_copy() {
   dir=$(receipt_directory)
   acquire_registry_lock
   if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
-    printf 'absent\n'
-    return 0
+    if [ "$rollback" -eq 1 ]; then
+      printf 'absent\n'
+      return 0
+    fi
+    die "workspace copy receipt is missing: $receipt"
   fi
   [ -d "$dir" ] && [ ! -L "$dir" ] || die "workspace copy receipt directory is unsafe: $dir"
   [ -f "$receipt" ] && [ ! -L "$receipt" ] || die "workspace copy receipt is unsafe: $receipt"
@@ -1016,6 +1019,14 @@ command_release_copy() {
       result=preserved
     else
       result=absent
+    fi
+  else
+    [ -f "$target" ] && [ ! -L "$target" ] \
+      || die "cannot commit copied workspace pointer because the target is missing or unsafe: $target"
+    validate_registry || die "cannot commit copied workspace pointer because the target registry is invalid: $REGISTRY"
+    if [ ! "$target" -ef "$receipt" ]; then
+      cmp -s "$receipt" "$target" \
+        || die "cannot commit copied workspace pointer because the target no longer matches its receipt: $target"
     fi
   fi
   rm -f -- "$receipt" || die "cannot release workspace copy receipt: $receipt"

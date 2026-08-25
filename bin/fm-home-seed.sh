@@ -507,6 +507,9 @@ SEED_ROLLBACK_ACTIVE=0
 SEED_COMMITTED=0
 SEED_REGISTRY_LOCK=
 SEED_REGISTRY_LOCK_HELD=0
+SEED_HOME_CLAIM=
+SEED_HOME_CLAIM_OWNER=
+SEED_HOME_CLAIM_HELD=0
 
 seed_registry_lock_release() {
   if [ "$SEED_REGISTRY_LOCK_HELD" -eq 1 ]; then
@@ -515,8 +518,41 @@ seed_registry_lock_release() {
   fi
 }
 
+seed_home_claim_acquire() {
+  local home=$1 parent
+  parent=$(dirname "$home")
+  mkdir -p "$parent" || return 1
+  SEED_HOME_CLAIM="$home.fm-home-seed.lock"
+  if ! fm_lock_try_acquire "$SEED_HOME_CLAIM"; then
+    echo "error: secondmate home is already being seeded: $home" >&2
+    SEED_HOME_CLAIM=
+    return 1
+  fi
+  SEED_HOME_CLAIM_OWNER=$FM_LOCK_OWNER_DIR
+  SEED_HOME_CLAIM_HELD=1
+}
+
+seed_home_claim_is_owned() {
+  [ "$SEED_HOME_CLAIM_HELD" -eq 1 ] || return 1
+  [ -n "$SEED_HOME_CLAIM" ] && [ -n "$SEED_HOME_CLAIM_OWNER" ] || return 1
+  fm_lock_points_to_owner "$SEED_HOME_CLAIM" "$SEED_HOME_CLAIM_OWNER"
+}
+
+seed_home_claim_release() {
+  [ "$SEED_HOME_CLAIM_HELD" -eq 1 ] || return 0
+  seed_home_claim_is_owned || {
+    echo "error: secondmate home seed claim changed unexpectedly: $SEED_HOME_CLAIM" >&2
+    return 1
+  }
+  fm_lock_release "$SEED_HOME_CLAIM" || return 1
+  SEED_HOME_CLAIM=
+  SEED_HOME_CLAIM_OWNER=
+  SEED_HOME_CLAIM_HELD=0
+}
+
 seed_exit_cleanup() {
   seed_rollback
+  seed_home_claim_release || true
   seed_registry_lock_release
 }
 SEED_HOME=
@@ -596,6 +632,10 @@ seed_return_treehouse_home() {
 seed_remove_created_home() {
   local home=$1 abs_home
   abs_home=$(seed_rollback_target "$home" "created home") || return 0
+  seed_home_claim_is_owned || {
+    echo "REFUSED: created home rollback no longer owns the target claim for $abs_home" >&2
+    return 0
+  }
   rm -rf -- "$abs_home" 2>/dev/null || true
 }
 
@@ -922,6 +962,10 @@ seed_home() {
     if [ -n "$workspace_id" ]; then
       FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$requested_abs" --check-only >/dev/null || return 1
     fi
+    seed_home_claim_acquire "$requested_abs" || return 1
+    if [ -n "$workspace_id" ]; then
+      FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$requested_abs" --check-only >/dev/null || return 1
+    fi
     validate_home_assignment "$id" "$requested_abs" || return 1
     SEED_HOME="$requested_abs"
     [ -e "$requested_abs" ] || SEED_HOME_CREATED=1
@@ -1048,6 +1092,7 @@ seed_home() {
     ) || return 1
     SEED_WORKSPACE_RECEIPT=
   fi
+  seed_home_claim_release || return 1
   SEED_COMMITTED=1
   seed_registry_lock_release
   trap - EXIT

@@ -49,6 +49,7 @@ test_workspace_charter_and_seed() {
     || fail "workspace seed created duplicate project clones"
   assert_absent "$CHILD/data/projects.md" "workspace seed created a managed-project registry"
   assert_absent "$CHILD/data/.workspace-copy-receipts" "successful workspace seed retained a copy receipt"
+  assert_absent "$CHILD.fm-home-seed.lock" "successful workspace seed retained its target-home claim"
   assert_grep 'projects: ;' "$PARENT/data/secondmates.md" "workspace-backed route claimed project clones"
   [ "$(FM_HOME="$CHILD" "$ROOT/bin/fm-workspace.sh" resolve interview-prep live --path)" = "$OUTER/interview-arc-live" ] \
     || fail "secondmate home did not resolve the copied workspace member"
@@ -116,10 +117,32 @@ test_workspace_seed_refuses_symlinked_new_target_before_clone() {
   pass "secondmate workspace: symlink-bearing new targets fail before home creation"
 }
 
+test_workspace_seed_refuses_claimed_target() {
+  local target claim owner out rc
+  target="$TMP_ROOT/claimed-secondmate-home"
+  claim="$target.fm-home-seed.lock"
+  owner="$claim.owner.fixture"
+  mkdir -p "$owner"
+  printf '%s\n' "$$" > "$owner/pid"
+  ln -s "$owner" "$claim"
+  set +e
+  out=$(FM_HOME="$PARENT" FM_SECONDMATE_CHARTER='claimed target fixture' \
+    "$ROOT/bin/fm-home-seed.sh" claimed "$target" --workspace interview-prep 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "workspace seed must refuse a target claimed by another seed"
+  assert_contains "$out" "already being seeded" "claimed-target refusal was not actionable"
+  assert_absent "$target" "claimed-target refusal created or removed the target home"
+  [ -L "$claim" ] || fail "claimed-target refusal removed another seed's claim"
+  assert_absent "$PARENT/data/claimed/brief.md" "claimed-target refusal left a charter brief"
+  pass "secondmate workspace: target claims serialize concurrent seeds"
+}
+
 setup_world
 test_workspace_charter_and_seed
 test_workspace_source_shapes_are_exclusive
 test_workspace_seed_refuses_protected_target_before_clone
 test_workspace_seed_refuses_symlinked_new_target_before_clone
+test_workspace_seed_refuses_claimed_target
 
 printf 'All secondmate workspace tests passed.\n'

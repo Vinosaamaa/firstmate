@@ -464,6 +464,38 @@ test_copy_receipt_owns_only_its_published_inode() {
   pass "fm-workspace: rollback receipts remove only their owned pointer inode"
 }
 
+test_copy_receipt_refuses_commit_without_pointer() {
+  local home target outer target_record receipt out rc
+  home=$(new_home copy-commit-source)
+  target="$TMP_ROOT/copy-commit-target/home"
+  mkdir -p "$target/bin" "$target/data" "$target/projects"
+  printf '# Firstmate\n' > "$target/AGENTS.md"
+  outer="$TMP_ROOT/copy-commit-source/domain"
+  mkdir -p "$outer"
+  outer=$(cd "$outer" && pwd -P)
+  git_repo "$outer/member"
+  FM_HOME="$home" "$WORKSPACE" add commit-domain \
+    --root "$outer" --scope 'Commit verification fixture.' \
+    --member "member=$outer/member" >/dev/null
+
+  FM_HOME="$home" "$WORKSPACE" copy commit-domain --to-home "$target" --receipt seed-commit >/dev/null
+  target_record="$target/data/workspaces/commit-domain.workspace"
+  receipt="$target/data/.workspace-copy-receipts/seed-commit"
+  FM_HOME="$target" "$WORKSPACE" remove commit-domain --confirm commit-domain >/dev/null
+  set +e
+  out=$(FM_HOME="$target" "$WORKSPACE" _release-copy commit-domain --receipt seed-commit 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "receipt release must refuse to commit a removed pointer"
+  assert_contains "$out" "target is missing or unsafe" "missing-pointer commit refusal was not actionable"
+  assert_present "$receipt" "failed pointer commit discarded its rollback receipt"
+  assert_absent "$target_record" "failed pointer commit recreated the removed target"
+  [ "$(FM_HOME="$target" "$WORKSPACE" _release-copy commit-domain --receipt seed-commit --rollback)" = absent ] \
+    || fail "rollback did not release the orphaned copy receipt"
+  assert_absent "$receipt" "rollback retained the orphaned copy receipt"
+  pass "fm-workspace: receipt commit requires the propagated pointer"
+}
+
 test_empty_non_git_outer_with_three_members
 test_instruction_order_and_drift_detection
 test_invalid_and_drifting_member_paths_fail_closed
@@ -475,5 +507,6 @@ test_brief_propagates_validated_workspace_route
 test_copy_preserves_pointer_without_cloning
 test_copy_refuses_conflicting_or_unsafe_targets
 test_copy_receipt_owns_only_its_published_inode
+test_copy_receipt_refuses_commit_without_pointer
 
 printf 'All fm-workspace tests passed.\n'

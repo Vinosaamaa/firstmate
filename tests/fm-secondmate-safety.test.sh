@@ -414,6 +414,8 @@ EOF
     || grep -F 'repository' "$err" >/dev/null \
     || fail "seed failure did not include the clone error"
   [ ! -e "$subhome" ] || fail "failed seed left the newly created secondmate home behind"
+  [ ! -e "$subhome.fm-home-seed.lock" ] && [ ! -L "$subhome.fm-home-seed.lock" ] \
+    || fail "failed seed left its target-home claim behind"
   [ ! -e "$subhome/.fm-secondmate-home" ] || fail "failed seed left a subhome marker"
   [ ! -e "$subhome/projects/alpha" ] || fail "failed seed left a previously cloned project"
   [ ! -e "$home/data/rollback/brief.md" ] || fail "failed seed left a generated charter brief"
