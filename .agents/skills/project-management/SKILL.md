@@ -15,7 +15,7 @@ metadata:
 Use this procedure before adding, creating, removing, or initializing a project or registering, resolving, or unregistering an external workspace.
 Cloning or registering a project or workspace is add intake and uses the same trigger.
 This skill is the single owner of Firstmate's project-management procedure.
-It does not replace `secondmate-provisioning`, which owns project clones inside persistent secondmate homes.
+It does not replace `secondmate-provisioning`, which owns project clones and external-workspace pointer propagation inside persistent secondmate homes.
 
 ## Preconditions and registry
 

@@ -47,7 +47,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-arm-command-policy.mjs` | Semantic owner of the watcher-arm PreToolUse policy (docs/arm-pretool-check.md)   |
 | `fm-subagent-pretool-check.sh` | Primary-home delegation-shape PreToolUse guard (docs/subagent-guard.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
-| `fm-home-seed.sh`        | Transactionally provision a local secondmate home and maintain `data/secondmates.md` |
+| `fm-home-seed.sh`        | Transactionally provision a local secondmate home from managed project clones or one external-workspace pointer and maintain `data/secondmates.md` |
 | `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host              |
 | `fm-remote-readiness-lib.sh` | Shared remote second-mate readiness gate: check and, when needed, repair then re-check through `fm-remote-doctor.sh` |
 | [`fm-project-origin-lib.sh`](../bin/fm-project-origin-lib.sh) | Accepted origin-form owner shared by both remote provisioning boundaries |
@@ -64,7 +64,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-project-mode.sh`     | Resolve a project's registered delivery posture, or its explicit stable ProjectCode with `--code`, from `data/projects.md` |
 | `fm-display-title-lib.sh` | Validate separate presentation fields and render the Unicode title or explicit ASCII/narrow fallback |
 | `fm-codex-title-lib.sh`  | Rename the loaded Codex conversation before delivering its initial or resumed task input |
-| `fm-workspace.sh`        | Register, validate, list, resolve, and safely unregister private external-workspace pointers |
+| `fm-workspace.sh`        | Register, validate, list, resolve, copy between Firstmate homes, and safely unregister private external-workspace pointers |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval            |
 | `fm-review-diff.sh`      | Review a crewmate branch or resolved PR head against the authoritative base          |
 | `fm-marker-lib.sh`       | Compatibility entry point for the from-firstmate carrier owned by `fm-operational-input.sh` |

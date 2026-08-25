@@ -3,7 +3,7 @@ name: secondmate-provisioning
 description: >-
   Agent-only reference for persistent secondmate setup and retirement.
   Use when creating, seeding, validating, launching, recovering, handing backlog to, pushing inherited local material into, or retiring a secondmate home, or when editing data/secondmates.md.
-  Covers local leases, whole-home remote routes, transactional seeding, record intake for an existing or inherited domain, project clone restrictions, secondmate harness pins, inherited local-material push, idle charter, handoff helper, and teardown safety.
+  Covers local leases, whole-home remote routes, transactional seeding, record intake for an existing or inherited domain, project clone and external-workspace routes, secondmate harness pins, inherited local-material push, idle charter, handoff helper, and teardown safety.
 user-invocable: false
 metadata:
   internal: true
@@ -46,13 +46,15 @@ The `projects:` field is a non-exclusive clone list, not ownership.
 Scaffold a secondmate charter with:
 
 ```sh
-bin/fm-brief.sh <id> --secondmate {<project>...|--no-projects}
+bin/fm-brief.sh <id> --secondmate {<project>...|--workspace <workspace-id>|--no-projects}
 ```
 
 The scaffold writes a charter brief instead of a task brief.
 Set `FM_SECONDMATE_CHARTER='<charter>'` to fill the charter text and `FM_SECONDMATE_SCOPE='<scope>'` when the routing scope differs.
 If you scaffold without `FM_SECONDMATE_CHARTER`, replace the `{TASK}` placeholder before seeding.
 Pass `--no-projects` instead of a project list to scaffold a project-less charter for a domain whose subject is the firstmate repo itself, whose home is a firstmate worktree and whose crews take pooled worktrees of the same repo.
+Pass `--workspace <workspace-id>` for a clone-free charter backed by one validated external-workspace pointer.
+That charter names the workspace, not its members; each later task still selects exactly one member route.
 `--no-projects` is mutually exclusive with a project list, and omitting both still fails loudly, so an accidental omission is never mistaken for a deliberate project-less seed.
 Re-seeding a populated home as project-less is refused non-destructively when the home contains project clones or `data/projects.md` entries.
 Retire or clean that home first, and re-scaffold a stale project-bearing charter with `--no-projects` before seeding.
@@ -63,7 +65,7 @@ Preserve the generated charter sections unless the domain genuinely needs a hard
 Provision a local persistent home and registry entry after the charter is filled:
 
 ```sh
-bin/fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}
+bin/fm-home-seed.sh <id> <home|-> {<project>...|--workspace <workspace-id>|--no-projects}
 ```
 
 Provision a whole remote home through its configured SSH host with:
@@ -78,6 +80,9 @@ A bare `<project>` remains a convenience for a project this home already has clo
 [`docs/remote-secondmates.md`](../../../docs/remote-secondmates.md#provision-a-route) owns the rest of the operator contract, and [`bin/fm-project-origin-lib.sh`](../../../bin/fm-project-origin-lib.sh) owns the accepted origin forms.
 Pass `--no-projects` in the project position to seed the project-less home described above; the same mutual-exclusion and fail-loud-on-omission rules apply.
 It may only seed a home with no project clones or project-registry entries, and refuses conversion of populated homes without changing them.
+Pass `--workspace <workspace-id>` to copy the primary home's validated private pointer into the local secondmate home without cloning, moving, or modifying any member repository.
+The primary pointer remains in place for top-level routing and recovery.
+A workspace-backed home contains no managed project clones or `data/projects.md` entries; its later tasks resolve one explicit member through its local pointer and then use the ordinary isolated-worktree lifecycle.
 `-` durably leases a fresh firstmate worktree via `treehouse get --lease` under the secondmate id.
 The lease survives with no live process and is never recycled by later `treehouse get` or `prune`.
 The slot stays reserved across restarts until the lease is released.
@@ -148,7 +153,7 @@ Direct seed without a preexisting brief requires `FM_SECONDMATE_CHARTER`.
 Run `bin/fm-home-seed.sh validate` when checking registry integrity; its header owns the complete validation and refusal mechanics.
 
 Seeding is transactional.
-If validation, cloning, no-mistakes initialization, or registry update fails, generated briefs, new homes, new project clones, and registry edits are rolled back.
+If validation, pointer propagation, cloning, no-mistakes initialization, or registry update fails, generated briefs, copied pointers, new homes, new project clones, and registry edits are rolled back.
 
 Secondmate project lists may include `no-mistakes` and `direct-PR` projects only.
 `local-only` projects stay with the main firstmate.
@@ -165,7 +170,7 @@ Both of those cases require record intake before the new mate acts on any inheri
 For an existing or inherited domain, the creating agent must:
 
 1. Reconcile every inherited plan against the domain's authoritative shipped state, which is `origin/main` for each relevant project plus the live deployment.
-   A fetched clone of each relevant project is a precondition of that reconciliation, so wire the home to its projects before reconciling rather than on first task.
+   A fetched view of each relevant repository is a precondition of that reconciliation, so wire the home to its managed clones or validated workspace members before reconciling rather than on first task.
    The imported backlog, the predecessor's own notes, instruction-surface prose, and an absent or unfetched local view are all inadmissible as shipped-state evidence.
 2. Seed the new home with only genuinely open work plus the domain's durable knowledge, meaning the learnings, decisions, and delivery posture that are still live.
 3. Never inherit a plan backlog blind.

@@ -28,6 +28,10 @@ set -u
 case "${1:-}" in
   has-session|new-session|new-window|send-keys|kill-window)
     printf '%s\n' "$*" >> "$FM_FAKE_TMUX_LOG"
+    if [ "${1:-}" = new-window ]; then
+      # Match the stable window-id contract used by the real tmux backend.
+      printf '@99\n'
+    fi
     exit 0
     ;;
   list-windows)
@@ -39,6 +43,10 @@ case "${1:-}" in
   display-message)
     case "$*" in
       *'#{cursor_y}'*) printf '0\n' ;;
+      *'#{pane_id}|#{pane_tty}'*) printf '%%99|/dev/ttys999\n' ;;
+      *'#{pane_id}'*) printf '%%99\n' ;;
+      *'#{pane_tty}'*) printf '/dev/ttys999\n' ;;
+      *'#{pane_current_command}'*) printf 'codex\n' ;;
       *) printf 'firstmate\n' ;;
     esac
     exit 0
@@ -50,6 +58,24 @@ case "${1:-}" in
     ;;
 esac
 exit 1
+SH
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *'-t ttys999 '*'-o pid=,pgid=,tpgid='*)
+    printf '424242 424242 424242\n'
+    ;;
+  *'-p 424242 '*'-o pid=,lstart=,tty=,comm='*)
+    printf '424242 Mon Jan 1 00:00:00 2026 ttys999 codex\n'
+    ;;
+  *'-p 424242 '*'-o args='*)
+    printf 'codex\n'
+    ;;
+  *)
+    exec /bin/ps "$@"
+    ;;
+esac
 SH
   cat > "$fakebin/treehouse" <<'SH'
 #!/usr/bin/env bash
@@ -96,6 +122,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  chmod +x "$fakebin/ps"
   chmod +x "$fakebin/treehouse"
   : > "$dir/tmux.log"
   printf '%s\n' "$fakebin"

@@ -7,9 +7,12 @@
 #       a fresh firstmate worktree via "treehouse get --lease", which durably
 #       leases the worktree under the secondmate <id> so the home survives with
 #       no live process and is never recycled until the lease is released with
-#       "treehouse return". Projects are cloned
-#       from the active home into the secondmate home's projects/ directory.
-#       That project list is non-exclusive provisioning data. Pass --no-projects
+#       "treehouse return". A project list clones those projects from the active
+#       home into the secondmate home's projects/ directory and remains
+#       non-exclusive provisioning data. `--workspace` instead copies one
+#       validated external-workspace pointer into the home without cloning or
+#       modifying its member repositories; the active-home pointer is retained.
+#       Pass --no-projects
 #       instead of a project list to seed a project-less home for a domain whose
 #       subject is the firstmate repo itself; it is mutually exclusive with a
 #       project list, and omitting both still fails loudly. A project-less seed
@@ -22,9 +25,6 @@
 #       generated briefs, new homes, new project clones, and registry edits are
 #       rolled back. Treehouse-acquired homes are returned only when the rollback
 #       target is safe; a failed return warns because the lease may still be held.
-#       `--workspace` copies one validated external-workspace pointer into the
-#       secondmate home without cloning or modifying its member repositories.
-#       The active-home pointer remains authoritative and is retained.
 #       Set FM_SECONDMATE_CHARTER='<charter>' to seed from inline charter text
 #       when no filled charter brief exists. Set FM_SECONDMATE_SCOPE='<scope>'
 #       to override the registry routing scope. Otherwise the registry summary
@@ -755,20 +755,25 @@ write_registry() {
   mv "$tmp" "$REG"
 }
 
-refuse_populated_projectless_home() {
-  local home=$1 project_path project registry_entries
+refuse_populated_home_project_data() {
+  local home=$1 route=${2:-projectless} project_path project registry_entries
   local clones=()
   local registry_projects=()
+  local route_label='project-less secondmate home' clean_label='--no-projects'
+  if [ "$route" = workspace ]; then
+    route_label='workspace-backed secondmate home'
+    clean_label='an external-workspace pointer'
+  fi
   if [ -L "$home/projects" ]; then
-    echo "error: cannot inspect existing projects directory at $home/projects because it is a symlink; resolve the symlink or retire or clean this home before seeding with --no-projects" >&2
+    echo "error: cannot inspect existing projects directory at $home/projects because it is a symlink; resolve the symlink or retire or clean this home before seeding with $clean_label" >&2
     return 1
   fi
   if [ -e "$home/projects" ] && [ ! -d "$home/projects" ]; then
-    echo "error: cannot inspect existing projects directory at $home/projects because it is not a directory; resolve its path or retire or clean this home before seeding with --no-projects" >&2
+    echo "error: cannot inspect existing projects directory at $home/projects because it is not a directory; resolve its path or retire or clean this home before seeding with $clean_label" >&2
     return 1
   fi
   if [ -d "$home/projects" ] && ! find -P "$home/projects" -mindepth 1 -maxdepth 1 -print >/dev/null 2>&1; then
-    echo "error: cannot inspect existing projects directory at $home/projects; resolve its access permissions or retire or clean this home before seeding with --no-projects" >&2
+    echo "error: cannot inspect existing projects directory at $home/projects; resolve its access permissions or retire or clean this home before seeding with $clean_label" >&2
     return 1
   fi
   for project_path in "$home/projects"/* "$home/projects"/.[!.]* "$home/projects"/..?*; do
@@ -777,7 +782,7 @@ refuse_populated_projectless_home() {
   done
   if [ -f "$home/data/projects.md" ]; then
     registry_entries=$(awk '$1 == "-" && $2 != "" { print $2 }' "$home/data/projects.md") || {
-      echo "error: cannot inspect existing project registry at $home/data/projects.md; resolve its access permissions or retire or clean this home before seeding with --no-projects" >&2
+      echo "error: cannot inspect existing project registry at $home/data/projects.md; resolve its access permissions or retire or clean this home before seeding with $clean_label" >&2
       return 1
     }
     while IFS= read -r project; do
@@ -786,16 +791,19 @@ refuse_populated_projectless_home() {
   fi
   [ "${#clones[@]}" -eq 0 ] && [ "${#registry_projects[@]}" -eq 0 ] && return 0
 
-  echo "error: cannot seed project-less secondmate home $home because it contains project data" >&2
+  echo "error: cannot seed $route_label $home because it contains project data" >&2
   if [ "${#clones[@]}" -gt 0 ]; then
     printf 'error: projects/ entries: %s\n' "$(join_projects "${clones[@]}")" >&2
   fi
   if [ "${#registry_projects[@]}" -gt 0 ]; then
     printf 'error: data/projects.md entries: %s\n' "$(join_projects "${registry_projects[@]}")" >&2
   fi
-  echo "error: retire or clean this home first before seeding with --no-projects" >&2
+  echo "error: retire or clean this home first before seeding with $clean_label" >&2
   return 1
 }
+
+refuse_populated_projectless_home() { refuse_populated_home_project_data "$1" projectless; }
+refuse_populated_pointer_home() { refuse_populated_home_project_data "$1" workspace; }
 
 refuse_projectful_projectless_charter() {
   local id=$1 brief=$2 project_clones
@@ -924,7 +932,7 @@ seed_home() {
       refuse_projectful_projectless_charter "$id" "$SEED_PARENT_BRIEF" || return 1
     fi
   elif [ -n "$workspace_id" ]; then
-    refuse_populated_projectless_home "$home" || return 1
+    refuse_populated_pointer_home "$home" || return 1
     if [ -f "$SEED_PARENT_BRIEF" ]; then
       refuse_mismatched_workspace_charter "$id" "$SEED_PARENT_BRIEF" "$workspace_id" || return 1
     fi

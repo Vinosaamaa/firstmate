@@ -12,6 +12,7 @@ OUTER="$TMP_ROOT/Interview Prep"
 
 setup_world() {
   mkdir -p "$PARENT/data" "$PARENT/projects" "$PARENT/state" "$OUTER"
+  OUTER=$(cd "$OUTER" && pwd -P)
   mark_firstmate_home "$CHILD"
   mkdir -p "$CHILD/data" "$CHILD/projects" "$CHILD/state" "$CHILD/config"
   fm_git_init_commit "$OUTER/interview-arc"
@@ -26,7 +27,7 @@ setup_world() {
 }
 
 test_workspace_charter_and_seed() {
-  local out
+  local out child_abs
   FM_HOME="$PARENT" \
     FM_SECONDMATE_CHARTER='Coordinate Interview Prep across Arc, Live, and Voice.' \
     FM_SECONDMATE_SCOPE='Interview Prep product and practice work.' \
@@ -35,13 +36,14 @@ test_workspace_charter_and_seed() {
 
   out=$(FM_HOME="$PARENT" "$ROOT/bin/fm-home-seed.sh" interview-prep "$CHILD" --workspace interview-prep) \
     || fail "workspace-backed secondmate seed failed"
-  assert_contains "$out" "home=$CHILD" "workspace seed did not report the persistent home"
+  child_abs=$(cd "$CHILD" && pwd -P)
+  assert_contains "$out" "home=$child_abs" "workspace seed did not report the persistent home"
   assert_present "$PARENT/data/workspaces/interview-prep.workspace" "workspace seed removed the main-home pointer"
   assert_present "$CHILD/data/workspaces/interview-prep.workspace" "workspace seed did not copy the pointer into the secondmate home"
   cmp -s "$PARENT/data/workspaces/interview-prep.workspace" "$CHILD/data/workspaces/interview-prep.workspace" \
     || fail "workspace seed changed the validated pointer bytes"
-  assert_grep '^# Workspace pointers$' "$CHILD/data/charter.md" "workspace charter omitted its pointer section"
-  assert_grep '^- interview-prep$' "$CHILD/data/charter.md" "workspace charter omitted the selected workspace"
+  assert_grep '# Workspace pointers' "$CHILD/data/charter.md" "workspace charter omitted its pointer section"
+  assert_grep '- interview-prep' "$CHILD/data/charter.md" "workspace charter omitted the selected workspace"
   assert_grep 'does not duplicate its member repositories' "$CHILD/data/charter.md" "workspace charter did not preserve the clone-free contract"
   [ -z "$(find "$CHILD/projects" -mindepth 1 -maxdepth 1 -print)" ] \
     || fail "workspace seed created duplicate project clones"

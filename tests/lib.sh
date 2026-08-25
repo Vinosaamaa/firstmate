@@ -246,6 +246,7 @@ fm_write_meta() {
 fm_write_secondmate_meta() {
   local file=$1 home=$2 id window projects=${4:-alpha} harness=${5:-echo}
   id=$(basename "$file" .meta)
+  home=$(cd "$home" && pwd -P) || return 1
   window=${3:-firstmate:fm-$id}
   fm_write_meta "$file" \
     "window=$window" \

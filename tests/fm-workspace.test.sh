@@ -360,6 +360,57 @@ test_copy_preserves_pointer_without_cloning() {
   pass "fm-workspace: copies validated pointers between homes without cloning or mutating repositories"
 }
 
+test_copy_refuses_conflicting_or_unsafe_targets() {
+  local home target outer source_member target_outer target_member target_record before out rc outside
+  home=$(new_home copy-safety-source)
+  target="$TMP_ROOT/copy-safety-target/home"
+  mkdir -p "$target/bin" "$target/data" "$target/projects"
+  printf '# Firstmate\n' > "$target/AGENTS.md"
+
+  outer="$TMP_ROOT/copy-safety-source/domain"
+  mkdir -p "$outer"
+  outer=$(cd "$outer" && pwd -P)
+  source_member="$outer/member"
+  git_repo "$source_member"
+  FM_HOME="$home" "$WORKSPACE" add copy-safety \
+    --root "$outer" --scope 'Source pointer fixture.' \
+    --member "member=$source_member" >/dev/null
+
+  target_outer="$TMP_ROOT/copy-safety-target/domain"
+  mkdir -p "$target_outer"
+  target_outer=$(cd "$target_outer" && pwd -P)
+  target_member="$target_outer/member"
+  git_repo "$target_member"
+  FM_HOME="$target" "$WORKSPACE" add copy-safety \
+    --root "$target_outer" --scope 'Conflicting pointer fixture.' \
+    --member "member=$target_member" >/dev/null
+  target_record="$target/data/workspaces/copy-safety.workspace"
+  before=$(cksum "$target_record")
+
+  set +e
+  out=$(FM_HOME="$home" "$WORKSPACE" copy copy-safety --to-home "$target" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "copy must refuse a conflicting target pointer"
+  assert_contains "$out" "differs from the active-home pointer" "conflicting copy refusal was not actionable"
+  [ "$(cksum "$target_record")" = "$before" ] || fail "conflicting copy changed the target pointer"
+  assert_present "$target_member/.git" "conflicting copy touched the target repository"
+
+  outside="$TMP_ROOT/copy-safety-outside.workspace"
+  printf 'outside pointer\n' > "$outside"
+  rm -f -- "$target_record"
+  ln -s "$outside" "$target_record"
+  set +e
+  out=$(FM_HOME="$home" "$WORKSPACE" copy copy-safety --to-home "$target" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "copy must refuse an unsafe target pointer"
+  assert_contains "$out" "target workspace record is unsafe" "unsafe target refusal was not actionable"
+  [ -L "$target_record" ] || fail "unsafe target refusal replaced the symlinked pointer"
+  [ "$(cat "$outside")" = 'outside pointer' ] || fail "unsafe target refusal changed the outside pointer"
+  pass "fm-workspace: conflicting and unsafe pointer targets fail closed"
+}
+
 test_empty_non_git_outer_with_three_members
 test_instruction_order_and_drift_detection
 test_invalid_and_drifting_member_paths_fail_closed
@@ -369,5 +420,6 @@ test_unregister_removes_only_pointer_even_after_drift
 test_existing_managed_clone_registry_is_unchanged
 test_brief_propagates_validated_workspace_route
 test_copy_preserves_pointer_without_cloning
+test_copy_refuses_conflicting_or_unsafe_targets
 
 printf 'All fm-workspace tests passed.\n'
