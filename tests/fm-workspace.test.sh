@@ -76,6 +76,22 @@ test_empty_non_git_outer_with_three_members() {
   pass "fm-workspace: empty non-Git outer root routes three explicit Git members"
 }
 
+test_filesystem_root_contains_member() {
+  local home member out
+  home=$(new_home filesystem-root)
+  member="$TMP_ROOT/filesystem-root/member"
+  git_repo "$member"
+  member=$(cd "$member" && pwd -P)
+
+  out=$(FM_HOME="$home" "$WORKSPACE" add filesystem-root \
+    --root / --scope 'Filesystem-root containment fixture.' \
+    --member "member=$member")
+  assert_contains "$out" "registered workspace filesystem-root" "filesystem-root workspace registration failed"
+  [ "$(FM_HOME="$home" "$WORKSPACE" resolve filesystem-root member --path)" = "$member" ] \
+    || fail "filesystem-root workspace did not resolve its contained member"
+  pass "fm-workspace: filesystem root contains canonical member paths"
+}
+
 test_instruction_order_and_drift_detection() {
   local home outer out rc
   home=$(new_home instructions)
@@ -329,6 +345,7 @@ test_brief_propagates_validated_workspace_route() {
 }
 
 test_empty_non_git_outer_with_three_members
+test_filesystem_root_contains_member
 test_instruction_order_and_drift_detection
 test_invalid_and_drifting_member_paths_fail_closed
 test_duplicate_identities_and_paths_are_refused

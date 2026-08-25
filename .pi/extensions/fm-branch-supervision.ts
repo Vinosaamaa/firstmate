@@ -80,6 +80,7 @@ const fmHome = process.env.FM_HOME || process.env.FM_ROOT_OVERRIDE || root;
 const fmRoot = process.env.FM_ROOT_OVERRIDE || root;
 const state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 const config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
+const configFile = join(config, "pi-supervision-branch");
 const afkFlag = join(state, ".afk");
 const sessionsDir = join(state, "branch-session");
 const sessionPointer = join(state, ".branch-session");
@@ -114,8 +115,36 @@ const scriptEnv = {
   FM_CONFIG_OVERRIDE: config,
 };
 
+function grantedProjects(): Set<string> {
+  try {
+    // Standing autonomy is project-specific. Each line must be an exact
+    // `project=<value>` matching task metadata; comments and blank lines are
+    // allowed, while malformed content fails the whole grant closed.
+    const grants = new Set<string>();
+    for (const raw of readFileSync(configFile, "utf8").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      if (!line.startsWith("project=") || line.length === 8) return new Set();
+      grants.add(line.slice(8));
+    }
+    return grants;
+  } catch {
+    return new Set();
+  }
+}
+
+function branchConfigured(): boolean {
+  return grantedProjects().size > 0;
+}
+
+function projectsAreGranted(projects: readonly string[]): boolean {
+  if (projects.length !== 1) return false;
+  const grants = grantedProjects();
+  return grants.has(projects[0]);
+}
+
 function offerEligible(offer: BranchDispatchOffer): boolean {
-  return offer.eligible === true;
+  return offer.eligible === true && offer.heartbeat === false && projectsAreGranted(offer.projects);
 }
 
 function afkActive(): boolean {
@@ -298,6 +327,7 @@ export default function (pi: ExtensionAPI) {
   // of a generation also writes the diagnostic marker and clears stray branch
   // leases from a prior generation.
   function actingAsOwner(expectedGeneration = generation): boolean {
+    if (!branchConfigured()) return false;
     if (!generationOwnsLock(expectedGeneration)) return false;
     if (activatedGeneration !== expectedGeneration) {
       if (!releaseBranchLeases(expectedGeneration)) return false;
@@ -623,6 +653,9 @@ ${context.command}
         if (scope.corrupted) {
           throw new Error("the unread wake queue could not be read safely");
         }
+        if (!projectsAreGranted(scope.projects)) {
+          throw new Error("the unread wake rows no longer resolve to one granted project");
+        }
         const grant = writeEligibleRowsSnapshot(
           state,
           scope.eligibleSeqs,
@@ -692,7 +725,7 @@ ${context.command}
   // lands before any later wake. The durable cursor advances only in
   // flushMirror after the complete pending batch reaches the branch.
   pi.on?.("turn_end", (_event, ctx) => {
-    if (!actingAsOwner()) return;
+    if (!branchConfigured() || !actingAsOwner()) return;
     try {
       pendingMirror.push(...collectMainDialog(ctx.sessionManager, mirrorCollection));
     } catch {
@@ -817,7 +850,11 @@ ${context.command}
         .map((item) => normalizeOutcomesToolOutput(item.text))
         .join("\n");
       const shellState = context.state as OutcomesToolShellState;
-      shellState.result = output ? new Text(theme.fg("toolOutput", output), 0, 0) : new Container();
+      const renderedOutput = new Container();
+      for (const line of output.split("\n")) {
+        if (line || output) renderedOutput.addChild(new Text(theme.fg("toolOutput", line), 0, 0));
+      }
+      shellState.result = renderedOutput;
       refreshOutcomesToolShell(shellState, theme, context);
       return new Container();
     },

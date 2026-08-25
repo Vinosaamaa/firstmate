@@ -206,8 +206,7 @@ mkdirSync(`${home}/state`, { recursive: true });
 mkdirSync(`${home}/config`, { recursive: true });
 mkdirSync(approvedProject, { recursive: true });
 writeFileSync(`${home}/state/branch-driver.meta`, `project=${approvedProject}\nwindow=fm-branch-driver\n`);
-// Supervision is default-on for every task: no captain grant file gates it
-// any more.
+writeFileSync(`${home}/config/pi-supervision-branch`, `project=${approvedProject}\n`);
 // The branch acts only for the session that owns the fleet lock; drivers own
 // it by default, while cold-start and secondary-session scenarios opt out.
 if (!process.env.FM_TEST_SKIP_LOCK) {
@@ -428,7 +427,7 @@ const calmOffResult = outcomesTool.renderResult(stockResult, { expanded: false, 
 if (calmOffCall.constructor.name !== "Box" || calmOffCall.paddingX !== 1 || calmOffCall.paddingY !== 1) {
   throw new Error("fm_branch_outcomes changed its ordinary shell rendering");
 }
-if (calmOffResult.constructor.name !== "Container" || calmOffCall.children[0]?.text !== "fm_branch_outcomes" || calmOffCall.children[1]?.text !== "OUTCOME_DUMP") {
+if (calmOffResult.constructor.name !== "Container" || calmOffCall.children[0]?.text !== "fm_branch_outcomes" || calmOffCall.children[1]?.children[0]?.text !== "OUTCOME_DUMP") {
   throw new Error("fm_branch_outcomes changed its ordinary call or result rendering");
 }
 pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: false });
@@ -540,7 +539,7 @@ EOF
   pass "branch prompt_cache_key is stable per home across sessions and distinct between homes"
 }
 
-test_branch_default_on_heartbeat_afk_and_fallback() {
+test_branch_project_grant_afk_and_fallback() {
   local repo broken home out status
   repo="$TMP_ROOT/gating-root"
   broken="$TMP_ROOT/gating-broken-root"
@@ -561,31 +560,33 @@ await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, settle
 const { dispatch, fire, settle, home, sentToMain } = globalThis.__t;
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
-// Default-on: with no config/pi-supervision-branch grant file present at
-// all (this driver never writes one), a task-scoped wake is still accepted
-// and activation still runs.
-if (existsSync(`${home}/config/pi-supervision-branch`)) {
-  throw new Error("test fixture unexpectedly wrote a grant file");
-}
+rmSync(`${home}/config/pi-supervision-branch`);
 fire("session_start", {});
-if (!dispatch("signal: default-on task wake").accepted) {
-  throw new Error("a task-scoped wake was refused with no grant file present");
+if (dispatch("signal: ungranted task wake").accepted) {
+  throw new Error("a task-scoped wake was accepted with no grant file present");
+}
+if (existsSync(`${home}/state/.pi-branch-extension-loaded`)) {
+  throw new Error("an absent grant activated branch runtime state");
+}
+writeFileSync(`${home}/config/pi-supervision-branch`, `project=${home}/projects/approved\n`);
+if (!dispatch("signal: granted task wake").accepted) {
+  throw new Error("a task-scoped wake was refused with its exact project grant present");
 }
 if (!existsSync(`${home}/state/.pi-branch-extension-loaded`)) {
-  throw new Error("default-on activation did not write the diagnostic marker");
+  throw new Error("a valid project grant did not activate the branch");
 }
-await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "default-on task wake prompt");
+await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "granted task wake prompt");
 
-// The real watcher emits a bare heartbeat only after its cheap bash scan has
-// flagged a fleet pass as possibly captain-relevant. The branch accepts that
-// wake without a resolved project and performs the deeper review.
-if (!dispatch("heartbeat", [], true, true).accepted) {
-  throw new Error("eligible heartbeat offer was refused");
+if (dispatch("heartbeat", [], true, true).accepted) throw new Error("fleet-wide heartbeat was accepted by a project grant");
+if (dispatch("signal: ungranted project", [`${home}/projects/other`]).accepted) {
+  throw new Error("an ungranted project was accepted");
 }
-if (dispatch("heartbeat", [], true, false).accepted) {
-  throw new Error("heartbeat with a main-owned queue row was accepted");
+if (dispatch("signal: mixed projects", [`${home}/projects/approved`, `${home}/projects/other`]).accepted) {
+  throw new Error("a mixed-project wake was accepted");
 }
-await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "heartbeat wake prompt");
+writeFileSync(`${home}/config/pi-supervision-branch`, "on\n");
+if (dispatch("signal: malformed grant").accepted) throw new Error("a malformed grant was accepted");
+writeFileSync(`${home}/config/pi-supervision-branch`, `project=${home}/projects/approved\n`);
 
 // The branch can downgrade its deeper review to a silent routine outcome or
 // escalate a captain-worthy finding into one main turn.
@@ -650,17 +651,17 @@ if (dispatch("check: unresolved fleet event", []).accepted) {
   throw new Error("branch accepted an unscoped, non-heartbeat fleet wake");
 }
 
-// Away mode still owns supervision regardless of default-on eligibility.
+// Away mode still owns supervision regardless of project eligibility.
 writeFileSync(`${home}/state/.afk`, "");
 if (dispatch("signal: while afk").accepted) throw new Error("branch accepted a wake during away mode");
 rmSync(`${home}/state/.afk`);
 if (!dispatch("signal: gates cleared").accepted) throw new Error("branch refused a wake with gates cleared");
-await settle(() => (globalThis.__fmPrompts ?? []).length === 3, "branch wake prompts");
+await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "branch wake prompts");
 process.exit(0);
 EOF
   status=$?
   out=$(cat "$TMP_ROOT/node-output")
-  expect_code 0 "$status" "default-on eligibility, heartbeat routing, and afk gating must bind: $out"
+  expect_code 0 "$status" "project grants, fleet-wide routing, and afk gating must bind: $out"
 
   PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$TMP_ROOT/gating-home-2" FM_ROOT_OVERRIDE="$broken" \
     DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
@@ -683,10 +684,10 @@ EOF
   status=$?
   out=$(cat "$TMP_ROOT/node-output")
   expect_code 0 "$status" "broken-branch fallback must return wakes to main: $out"
-  pass "branch default-on eligibility (task-scoped, heartbeat, afk) binds and a broken branch falls back to main"
+  pass "branch project grants and afk gating bind while a broken branch falls back to main"
 }
 
-test_branch_predrain_recheck_defers_new_main_owned_row() {
+test_branch_predrain_recheck_defers_new_ungranted_project() {
   local repo home out status
   repo="$TMP_ROOT/predrain-recheck-root"
   home="$TMP_ROOT/predrain-recheck-home"
@@ -697,31 +698,32 @@ test_branch_predrain_recheck_defers_new_main_owned_row() {
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, home, mainUserMessages }; })()`);
 const { dispatch, fire, home, mainUserMessages } = globalThis.__t;
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 fire("session_start", {});
-const offer = dispatch("heartbeat", [], true, true);
-if (!offer.accepted) throw new Error("eligible heartbeat offer was not accepted");
-appendFileSync(`${home}/state/.wake-queue`, "2\t2\tcheck\tx-inbox\tcheck: pending x mention\n");
+const offer = dispatch("signal: granted task wake");
+if (!offer.accepted) throw new Error("granted task offer was not accepted");
+writeFileSync(`${home}/state/late-other.meta`, `project=${home}/projects/other\nwindow=fm-late-other\n`);
+appendFileSync(`${home}/state/.wake-queue`, "2\t2\tsignal\tlate-other.status\tsignal: late ungranted project\n");
 for (let i = 0; i < 250 && mainUserMessages.length === 0; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 if ((globalThis.__fmPrompts ?? []).length !== 0) {
-  throw new Error("branch prompted after a main-owned row arrived before drain");
+  throw new Error("branch prompted after an ungranted project arrived before drain");
 }
-if (mainUserMessages.length !== 1 || !String(mainUserMessages[0].content).includes("FIRSTMATE WATCHER WAKE: heartbeat")) {
+if (mainUserMessages.length !== 1 || !String(mainUserMessages[0].content).includes("FIRSTMATE WATCHER WAKE: signal: granted task wake")) {
   throw new Error(`mixed queue did not fall back to main: ${JSON.stringify(mainUserMessages)}`);
 }
 const queue = readFileSync(`${home}/state/.wake-queue`, "utf8");
-if (!queue.includes("\theartbeat\t") || !queue.includes("\tcheck\t")) {
+if (!queue.includes("\tsignal\tbranch-driver.status\t") || !queue.includes("\tsignal\tlate-other.status\t")) {
   throw new Error(`pre-drain fallback mutated the queued set: ${queue}`);
 }
 process.exit(0);
 EOF
   status=$?
   out=$(cat "$TMP_ROOT/node-output")
-  expect_code 0 "$status" "pre-drain eligibility re-check must defer the whole mixed queue to main: $out"
-  pass "pre-drain eligibility re-check defers a newly main-owned row"
+  expect_code 0 "$status" "pre-drain grant re-check must defer a newly mixed-project queue to main: $out"
+  pass "pre-drain grant re-check defers a newly ungranted project"
 }
 
 # The non-heartbeat half of the same recheck: a check-kind row that arrives
@@ -893,7 +895,7 @@ for (let i = 0; i < 250 && !globalThis.__fmPromptStarted; i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 if (!globalThis.__fmPromptStarted) throw new Error("first branch prompt did not start");
-if (!dispatch("heartbeat", [], true, true).accepted) throw new Error("queued heartbeat was not accepted");
+if (!dispatch("signal: second queued wake").accepted) throw new Error("second queued project wake was not accepted");
 writeFileSync(`${home}/state/.wake-queue`, "");
 releaseFirst();
 for (let i = 0; i < 250 && (globalThis.__fmPrompts ?? []).length < 1; i += 1) {
@@ -1415,6 +1417,12 @@ if (!mixed.projects.includes(project)) {
   throw new Error(`eligible project context lost: ${JSON.stringify(mixed.projects)}`);
 }
 
+writeFileSync(`${state}/fm-window.meta`, `project=${process.env.FM_HOME}/projects/other\nwindow=fm-other\n`);
+const staleCollision = scopeForUnreadWake(state, false);
+if (staleCollision.projects.length !== 1 || staleCollision.projects[0] !== project) {
+  throw new Error(`a task id matching another task's window changed stale routing: ${JSON.stringify(staleCollision)}`);
+}
+
 if (!activateEligibleRowsOwner(state, process.env.GRANT, process.pid, "fixture")) {
   throw new Error("branch owner activation failed");
 }
@@ -1524,7 +1532,7 @@ for (const row of [stockRow, actualRow]) {
   row.updateResult(result);
 }
 if (JSON.stringify(actualRow.render(100)) !== JSON.stringify(stockRow.render(100))) {
-  throw new Error("Calm-off ToolExecutionComponent rendering differs from Pi stock");
+  throw new Error(`Calm-off ToolExecutionComponent rendering differs from Pi stock: actual=${JSON.stringify(actualRow.render(100))} stock=${JSON.stringify(stockRow.render(100))}`);
 }
 pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: false });
 actualRow.invalidate();
@@ -1559,8 +1567,8 @@ test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot
 test_branch_cache_key_is_per_home_stable
-test_branch_default_on_heartbeat_afk_and_fallback
-test_branch_predrain_recheck_defers_new_main_owned_row
+test_branch_project_grant_afk_and_fallback
+test_branch_predrain_recheck_defers_new_ungranted_project
 test_branch_predrain_recheck_excludes_new_main_owned_row_without_deferring_eligible_work
 test_settled_branch_prompt_releases_unacknowledged_grant
 test_main_owned_grant_result_falls_back_to_main

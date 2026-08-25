@@ -82,7 +82,8 @@ export function scopeForUnreadWake(state: string, heartbeat: boolean): UnreadWak
   if (rows.length === 0) return EMPTY_SCOPE;
 
   const projects = new Set<string>();
-  const metadata = new Map<string, string>();
+  const taskProjects = new Map<string, string>();
+  const windowProjects = new Map<string, string | null>();
   try {
     for (const name of readdirSync(state)) {
       if (!name.endsWith(".meta")) continue;
@@ -91,8 +92,11 @@ export function scopeForUnreadWake(state: string, heartbeat: boolean): UnreadWak
       const project = fields.find((line) => line.startsWith("project="))?.slice(8) ?? "";
       const window = fields.find((line) => line.startsWith("window="))?.slice(7) ?? "";
       if (project) {
-        metadata.set(task, project);
-        if (window) metadata.set(window, project);
+        taskProjects.set(task, project);
+        if (window) {
+          const existing = windowProjects.get(window);
+          windowProjects.set(window, existing === undefined || existing === project ? project : null);
+        }
       }
     }
   } catch {
@@ -120,9 +124,9 @@ export function scopeForUnreadWake(state: string, heartbeat: boolean): UnreadWak
     let project = "";
     if (kind === "signal") {
       const task = key.replace(/\.(?:status|turn-ended)$/, "");
-      project = metadata.get(task) ?? "";
+      project = taskProjects.get(task) ?? "";
     } else if (kind === "stale") {
-      project = metadata.get(key) ?? metadata.get(key.replace(/^fm-/, "")) ?? "";
+      project = windowProjects.get(key) ?? "";
     } else {
       // A kind fm_wake_append never emits: structural corruption, not an
       // ordinary main-only row.

@@ -56,17 +56,20 @@ The `/calm` command replaces the file atomically before changing live presentati
 The extension reloads this preference on every Pi `session_start`, including startup, new, resume, fork, and reload reasons.
 This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
 
-## Pi supervision branch
+## Pi supervision branch (config/pi-supervision-branch)
 
-On a Pi primary, a persistent in-process supervision branch handles eligible task-local wake rows and selected heartbeat reviews while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility, mixed-queue dispatch, heartbeat routing, and the pre-drain recheck.
-Supervision is default-on: once a Pi primary session owns this home's fleet lock, the branch is eligible for every task with no captain grant file required.
-A genuinely no-op heartbeat is absorbed in bash and never reaches Pi, and every watcher-failure alarm stays on the captain-facing main path.
+On a Pi primary, a persistent in-process supervision branch can handle an explicitly granted project's eligible task-local wake rows while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility, per-actor claims, and the pre-drain recheck.
+The gitignored `config/pi-supervision-branch` file under the effective home is the captain's explicit, project-local autonomy grant.
+It contains one or more exact `project=<value>` lines, where each value exactly matches the `project=` field in task metadata; blank lines and `#` comments are allowed.
+A wake is delegated only when its eligible row set is well formed, task-local, and resolves to one listed project.
+Fleet-wide, unresolvable, mixed-project, absent, unreadable, empty, legacy `on`, `off`, malformed queue rows, and otherwise malformed grants stay on the captain-facing main path and activate no branch-owned runtime state or lease cleanup.
+The file is read fresh at the initial offer and again before the branch row claim, so edits take effect without restarting Pi and a changed scope returns to main.
 Away mode still declines every wake offer, and a broken branch still falls back to today's wake-to-main path.
-The branch's role stays bounded exactly as the captain-approved architecture set it: it cannot merge a PR, land local work, or freshly spawn, and every existing captain gate remains unchanged.
-Homes on any other primary harness never load this feature and are entirely unaffected.
-`AGENTS.md`'s `state/` inventory routes the branch's runtime files to their format and lifecycle owners.
+The grant enables only the Pi-primary routing and bounded supervision role: sharing a home does not extend authority to unlisted projects, the branch cannot merge a PR, land local work, or freshly spawn, and every existing captain gate remains unchanged.
+Homes on any other primary harness never read this file and are entirely unaffected.
+Runtime state lives in `state/branch-outcomes.jsonl` with its `.branch-outcomes-cursor`, the persistent conversation under `state/branch-session/` with its `.branch-session` pointer and `.branch-mirror-cursor`, per-actor row claims in `state/.branch-eligible-rows`, `state/.branch-eligible-owner`, and `state/.main-eligible-rows`, and per-task `state/.lease-<task>` files; the owners are listed in `AGENTS.md`.
 A captain-facing (verdict `captain`) branch outcome opens exactly one follow-up turn on main - that turn is the captain-visible result, and Pi never separately prints or renders the merge note itself.
-A no-change heartbeat outcome explicitly reported with `task=fleet` and `silent=true` is delivered silently with no rendered note, while every other routine outcome still appends a rendered, sailboat-prefixed note.
+Every meaningful routine outcome appends a rendered, sailboat-prefixed outcome note without branch-mechanics boilerplate.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
