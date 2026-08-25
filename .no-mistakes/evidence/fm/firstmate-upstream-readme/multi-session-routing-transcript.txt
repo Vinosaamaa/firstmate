@@ -1,0 +1,7 @@
+Manual end-to-end check through bin/fm-branch-wake-batch.sh and bin/fm-wake-drain.sh
+
+offered project: /projects/alpha
+bound branch output: 1\t1\tsignal\talpha.status\tsignal: alpha ready
+main output beside reservation: 1\t2\tsignal\tbeta.status\tsignal: beta stays on main
+remaining queue after branch acknowledgement: 1\t2\tsignal\tbeta.status\tsignal: beta stays on main
+reservation retired: yes
