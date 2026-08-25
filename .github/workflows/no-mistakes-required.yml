@@ -1,4 +1,4 @@
-name: Require no-mistakes
+name: Optional no-mistakes attestation
 run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
 
 on:
@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   check:
-    name: PR must be raised via no-mistakes
+    name: Validate no-mistakes attestation when present
     runs-on: ubuntu-latest
     if: >-
       github.event.pull_request.user.login != 'github-actions[bot]' &&
@@ -107,17 +107,5 @@ jobs:
             echo "Pipeline step attestation is valid: review, test, and document are completed."
             exit 0
           fi
-          {
-            echo "::error::This PR was not raised through no-mistakes."
-            echo
-            echo "Contributions to this repository must be submitted via 'git push no-mistakes'."
-            echo "That pipeline runs the required review/test/lint/CI steps and writes a"
-            echo "deterministic '## Pipeline' section into the PR body containing:"
-            echo
-            echo "    $marker"
-            echo
-            echo "See CONTRIBUTING.md for setup and the full workflow."
-            echo
-            echo "PR author: ${PR_AUTHOR}"
-          } >&2
-          exit 1
+          echo "No no-mistakes attestation found; this Fastlane PR does not require the optional gate."
+          exit 0

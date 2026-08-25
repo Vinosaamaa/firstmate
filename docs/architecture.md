@@ -256,11 +256,11 @@ The `data/secondmates.md` line contract is owned by the [`secondmate-provisionin
 
 ## Delivery modes are explicit per task
 
-`no-mistakes` tasks run the full validation pipeline, `direct-PR` tasks open PRs without that pipeline, and `local-only` tasks stay local until firstmate performs an approved fast-forward merge.
-Each task's mode and `yolo` merge posture are firstmate's decision at intake.
+`AGENTS.md` section 7 owns the delivery-mode contract: Fastlane uses `direct-PR` with focused validation, explicitly requested `no-mistakes` tasks run the full validation pipeline, and `local-only` tasks stay local until firstmate performs an approved fast-forward merge.
+Each task's mode and `yolo` merge posture are resolved at intake under `AGENTS.md` section 7, with no-mistakes requiring an explicit captain request.
 The mode is passed explicitly to `bin/fm-brief.sh`, and both values are passed explicitly to `bin/fm-spawn.sh` and `bin/fm-promote.sh`; each command refuses to guess the values it consumes.
 A ship brief records its mode as a fixed machine-readable line and the spawn refuses to launch on a different one, so the worker's instructions and the recorded task delivery cannot diverge.
-`data/projects.md` records each project's standing posture, stable explicit `[code=<ProjectCode>]` acronym, and optional `+yolo` merge flag as the captain's default and as context for that decision, including the conditional `no-mistakes-prod-only` policy; a ship spawn that drops below the registered rigor prints a deviation notice and continues.
+`data/projects.md` records each project's standing posture, stable explicit `[code=<ProjectCode>]` acronym, and optional `+yolo` merge flag as context, including the conditional `no-mistakes-prod-only` policy; no-mistakes still requires an explicit captain request and a Fastlane ship may use `direct-PR`.
 Legacy registry lines without a code retain their delivery behavior, while `bin/fm-project-mode.sh --code` refuses to guess a presentation acronym.
 
 Worker presentation identity keeps five independent fields: the persistent callsign, registered project code, explicit one- or two-word task label, internal task id, and harness session UUID.

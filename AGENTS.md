@@ -41,7 +41,7 @@ You may maintain this repo's private operational state directly.
 Shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and public `skills/`.
 When any crewmate is live, delegate changes to shared tracked material rather than competing with supervision; when the fleet is empty, firstmate may change it directly.
 This repo is a shared template, while `.env`, `data/`, `state/`, `config/`, `projects/`, and `.no-mistakes/` are captain-private and gitignored.
-Ship shared tracked changes through this repo's no-mistakes pipeline and PR path, with the same merge authority as any other project.
+Ship shared tracked changes through the selected delivery path and PR path, with the same merge authority as any other project.
 Never add an agent name as a commit co-author.
 
 ## 2. Layout and state
@@ -299,9 +299,9 @@ Pass the mode explicitly to the brief, and pass both values explicitly to the sp
 A ship or scout intake also resolves the project's explicit registered `ProjectCode` with `bin/fm-project-mode.sh --code` and assigns an explicit one- or two-word `TaskLabel` that makes the task understandable; pass both to `bin/fm-brief.sh` as `--project-code` and `--task-label`.
 Never derive either field from the raw task id or conversation text at spawn time, and never put live working/blocked state in the label.
 A one-task worker's label stays fixed across relaunch and exact resume; a deliberately reassigned long-lived worker may change only `task_label=`, never its callsign, project code, task id, or harness session UUID.
-A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
-On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
-An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
+A current explicit captain instruction that requests no-mistakes selects that mode; otherwise Fastlane uses direct-PR and the project's registry posture supplies context only.
+Never infer a no-mistakes request from a `no-mistakes-prod-only` posture, file location, project name, task surface, security, architecture, or risk.
+An unregistered project or absent registry uses Fastlane with yolo off, and the registration gap goes to the captain.
 Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
 
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
@@ -330,14 +330,17 @@ Supervise all live work under section 8.
 ### Selected delivery path and merge authority
 
 The selected delivery path owns its own rigor.
-When no-mistakes is selected, no-mistakes alone owns review, fixes, tests, documentation, push, PR, and CI; otherwise follow the faster path without adding an independent reviewer.
-Never hold work outside no-mistakes for a manual clean verdict, stack serial manual reviews, or infer authority for one from security, architecture, or risk alone.
+The ordinary Fastlane shape is the smallest complete change, focused validation, commit, push, PR, required CI, and guarded cleanup.
+Fastlane never implies or invokes no-mistakes.
+Run no-mistakes only when the captain explicitly requests it.
+When no-mistakes is explicitly requested, no-mistakes alone owns review, fixes, tests, documentation, push, PR, and CI.
+Fastlane does not add an independent reviewer or manual gate unless the captain explicitly requests that deliverable.
 A separate review or audit is allowed only when the captain explicitly requests that deliverable or the authorized task is a knowledge-only review; one named question remains scoped to that question.
-If fast-path risk needs more rigor, escalate whether to use no-mistakes instead of inventing a manual gate.
+If focused validation exposes a concrete blocker, stop and report it rather than silently invoking no-mistakes.
 The path's worker, automated gates, and captain approval remain authoritative:
 
-- **no-mistakes** runs the full pipeline through a PR, then waits for the configured merge authority.
-- **direct-PR** has the worker push and open a PR without the no-mistakes pipeline, then waits for the configured merge authority.
+- **no-mistakes** runs the full pipeline through a PR after an explicit captain request, then waits for the configured merge authority.
+- **direct-PR** is the ordinary Fastlane path and has the worker complete the defined shape without invoking no-mistakes, then waits for the configured merge authority.
 - **local-only** has the worker stop with a clean ready branch, then waits for the configured merge authority before firstmate uses the guarded fast-forward merge path.
 
 Delivery mode and `yolo` are orthogonal.

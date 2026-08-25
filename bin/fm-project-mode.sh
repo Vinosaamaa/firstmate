@@ -19,7 +19,7 @@
 # letter. It is explicit project identity, not derived from the project name.
 #
 # Registered modes:
-#   no-mistakes            full pipeline -> PR -> configured merge authority (default)
+#   no-mistakes            full pipeline -> PR -> configured merge authority (explicit request only)
 #   direct-PR              push + PR via gh-axi, no pipeline
 #   local-only             local branch, no remote/PR, guarded local merge
 #   no-mistakes-prod-only  a conditional policy, not a task mode: firstmate
@@ -37,8 +37,8 @@
 # code, malformed code, or duplicate code is an error: presentation identity is
 # never guessed. Legacy posture resolution remains compatible and unchanged.
 #
-# An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
-# to stderr, so a typo never silently drops the gate.
+# An unknown/missing project or unknown mode falls back to the "no-mistakes off"
+# compatibility sentinel and warns to stderr; this lookup never invokes the gate.
 # Usage: fm-project-mode.sh [--raw|--code] <project-name>
 set -eu
 

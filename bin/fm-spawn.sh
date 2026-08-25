@@ -1911,11 +1911,10 @@ if [ "$KIND" = ship ]; then
     echo "error: delivery mismatch for $ID: the brief says mode=$BRIEF_MODE but this spawn passed --mode $MODE; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
     exit 1
   fi
-  # The registry holds the captain's standing posture, so dropping below it is
-  # allowed (a current explicit captain instruction wins) but never silent. An
-  # unregistered project resolves to the same no-mistakes standing default, which
-  # is why the notice names the standing posture rather than the registry line. A
-  # conditional policy is excluded: both of its legs are legitimate classifications.
+  # The registry holds a standing posture as context, and a direct-PR Fastlane
+  # task may use a lower-rigor mode without invoking no-mistakes. The notice is
+  # advisory, and a conditional policy is excluded because both of its legs are
+  # legitimate classifications.
   STANDING_MODE=$("$FM_ROOT/bin/fm-project-mode.sh" --raw "$PROJ_NAME" 2>/dev/null | cut -d' ' -f1) || STANDING_MODE=
   if [ -n "$STANDING_MODE" ] && [ "$STANDING_MODE" != no-mistakes-prod-only ] \
      && [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
