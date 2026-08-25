@@ -32,7 +32,7 @@ Each private record points at one existing canonical absolute outer root and nam
 The outer root may contain no ordinary files and is never copied, moved, cloned, initialized, or used as a writable task root.
 Existing clones under `projects/` and their `data/projects.md` delivery postures are unchanged.
 
-Use `bin/fm-workspace.sh add` or its `register` alias to register a pointer, `list` and `show` to inspect it, `resolve` to select one member, and `remove` or `unregister` with the exact repeated-id confirmation to remove it.
+Use `bin/fm-workspace.sh add` or its `register` alias to register a pointer, `list` and `show` to inspect it, `resolve` to select one member, `copy --to-home` to reproduce the same validated pointer in another Firstmate home without touching its repositories, and `remove` or `unregister` with the exact repeated-id confirmation to remove it.
 Read `bin/fm-workspace.sh --help` before operating it because that executable owns the exact record format, flags, canonical-path checks, member containment declaration, instruction commitments, atomic writes, and removal mechanics.
 The project-management procedure owns the required intake judgment, secondmate-scope check, and captain authority for unregistering.
 
@@ -44,6 +44,9 @@ Session start prints the validated workspace list in its context digest, or an `
 Workspace intake is explicit on both axes: pass matching `--workspace <workspace-id> --member <member-id>` arguments to `bin/fm-brief.sh` and `bin/fm-spawn.sh`.
 Spawn resolves the chosen canonical member Git root and then uses the ordinary backend-neutral isolated-worktree lifecycle.
 Cross-repository implementation uses separately linked tasks, one member repository and worktree per task.
+For a persistent local secondmate, `bin/fm-home-seed.sh <id> <home|-> --workspace <workspace-id>` copies the validated private pointer into that home and records no managed project clone.
+The primary retains its pointer for top-level routing and recovery; the secondmate resolves its copied pointer for domain-local task intake.
+This is route metadata, not a search order: each task selects either one managed project clone or one workspace member, never scans both registries, and never treats the outer workspace root as its task directory.
 Shared multi-repository worktrees, worker mutation of registered primary checkouts, non-Git outer-file editing, and zero-member workspaces are unsupported in this focused slice.
 Unregister removes only the private record under `data/workspaces/`; it never deletes the external root, instruction files, or member repositories, including when those external paths have drifted.
 
@@ -234,8 +237,8 @@ The concise single-line route contract is owned by the [`secondmate-provisioning
 A remote route adds `host:` and `root:` before the existing fields and places the whole secondmate home on that SSH host; it does not make ordinary workers remotely placeable.
 [`remote-secondmates.md`](remote-secondmates.md) owns current remote setup, operation, and safety behavior.
 Use `fm-home-seed.sh validate` to check the complete operational registry contract documented by the command itself.
-The main first mate routes by reading those scopes with judgment; the project list is provisioning data, not exclusive ownership.
-Use `fm-home-seed.sh <id> - {<project>...|--no-projects}` to lease a fresh local firstmate worktree for the secondmate home.
+The main first mate routes by reading those scopes with judgment; any project list is provisioning data, not exclusive ownership.
+Use `fm-home-seed.sh <id> - {<project>...|--workspace <workspace-id>|--no-projects}` to lease a fresh local firstmate worktree for the secondmate home.
 For remote provisioning, including supplied project origins, follow [Remote second mates](remote-secondmates.md#provision-a-route).
 Use the deliberate `--no-projects` signal only for a firstmate-repo domain that needs no separate project clones.
 It cannot be combined with a project list, and omitting both still fails loudly.

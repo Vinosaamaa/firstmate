@@ -315,6 +315,13 @@ fm_send_resolve_target() {  # <raw-target>
     *:*) ;; # Preserve the verified explicit-endpoint compatibility path below.
     *)
       if [ -z "$meta" ]; then
+        case "$raw" in
+          fm-*)
+            RESOLUTION_TRIED="meta=$STATE/$raw.meta; legacy-meta=$STATE/${raw#fm-}.meta; backend=none"
+            echo "error: no metadata for $raw in $STATE (tried $RESOLUTION_TRIED); pass a well-formed explicit backend target only when targeting outside this firstmate home" >&2
+            return 1
+            ;;
+        esac
         set +e
         id=$(fm_identity_resolve_selector "$STATE" "$raw")
         identity_rc=$?

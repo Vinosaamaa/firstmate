@@ -2,14 +2,17 @@
 # Provision and route persistent secondmate homes.
 #
 # Usage:
-#   fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}
+#   fm-home-seed.sh <id> <home|-> {<project>...|--workspace <workspace-id>|--no-projects}
 #       Provision <home> as an isolated firstmate home. If <home> is "-", acquire
 #       a fresh firstmate worktree via "treehouse get --lease", which durably
 #       leases the worktree under the secondmate <id> so the home survives with
 #       no live process and is never recycled until the lease is released with
-#       "treehouse return". Projects are cloned
-#       from the active home into the secondmate home's projects/ directory.
-#       That project list is non-exclusive provisioning data. Pass --no-projects
+#       "treehouse return". A project list clones those projects from the active
+#       home into the secondmate home's projects/ directory and remains
+#       non-exclusive provisioning data. `--workspace` instead copies one
+#       validated external-workspace pointer into the home without cloning or
+#       modifying its member repositories; the active-home pointer is retained.
+#       Pass --no-projects
 #       instead of a project list to seed a project-less home for a domain whose
 #       subject is the firstmate repo itself; it is mutually exclusive with a
 #       project list, and omitting both still fails loudly. A project-less seed
@@ -18,10 +21,11 @@
 #       is copied to data/charter.md, newly cloned no-mistakes projects are
 #       initialized, an ignored .fm-secondmate-parent binding is published before
 #       the .fm-secondmate-home identity marker, and data/secondmates.md is updated.
-#       Seeding is transactional: on validation, clone, init, or registry failure,
-#       generated briefs, new homes, new project clones, and registry edits are
-#       rolled back. Treehouse-acquired homes are returned only when the rollback
-#       target is safe; a failed return warns because the lease may still be held.
+#       Seeding is transactional: on validation, pointer propagation, clone, init,
+#       or registry failure, generated briefs, copied pointers, new homes, new
+#       project clones, and registry edits are rolled back. Treehouse-acquired
+#       homes are returned only when the rollback target is safe; a failed return
+#       warns because the lease may still be held.
 #       Set FM_SECONDMATE_CHARTER='<charter>' to seed from inline charter text
 #       when no filled charter brief exists. Set FM_SECONDMATE_SCOPE='<scope>'
 #       to override the registry routing scope. Otherwise the registry summary
@@ -51,7 +55,7 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
 usage() {
-  echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
+  echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--workspace <workspace-id>|--no-projects}" >&2
   echo "       fm-home-seed.sh validate" >&2
 }
 
@@ -504,6 +508,11 @@ SEED_ROLLBACK_ACTIVE=0
 SEED_COMMITTED=0
 SEED_REGISTRY_LOCK=
 SEED_REGISTRY_LOCK_HELD=0
+SEED_WORKSPACE_REGISTRY_LOCK=
+SEED_WORKSPACE_REGISTRY_LOCK_HELD=0
+SEED_HOME_CLAIM=
+SEED_HOME_CLAIM_OWNER=
+SEED_HOME_CLAIM_HELD=0
 
 seed_registry_lock_release() {
   if [ "$SEED_REGISTRY_LOCK_HELD" -eq 1 ]; then
@@ -512,8 +521,65 @@ seed_registry_lock_release() {
   fi
 }
 
+seed_workspace_registry_lock_acquire() {
+  local home=$1
+  [ -d "$home/data" ] && [ ! -L "$home/data" ] || {
+    echo "error: secondmate data directory is missing or unsafe: $home/data" >&2
+    return 1
+  }
+  SEED_WORKSPACE_REGISTRY_LOCK="$home/data/.workspaces.lock"
+  if ! mkdir -- "$SEED_WORKSPACE_REGISTRY_LOCK" 2>/dev/null; then
+    echo "error: external workspace registry is locked by another operation: $SEED_WORKSPACE_REGISTRY_LOCK" >&2
+    SEED_WORKSPACE_REGISTRY_LOCK=
+    return 1
+  fi
+  SEED_WORKSPACE_REGISTRY_LOCK_HELD=1
+}
+
+seed_workspace_registry_lock_release() {
+  if [ "$SEED_WORKSPACE_REGISTRY_LOCK_HELD" -eq 1 ]; then
+    rmdir -- "$SEED_WORKSPACE_REGISTRY_LOCK" 2>/dev/null || true
+    SEED_WORKSPACE_REGISTRY_LOCK_HELD=0
+    SEED_WORKSPACE_REGISTRY_LOCK=
+  fi
+}
+
+seed_home_claim_acquire() {
+  local home=$1 parent
+  parent=$(dirname "$home")
+  mkdir -p "$parent" || return 1
+  SEED_HOME_CLAIM="$home.fm-home-seed.lock"
+  if ! fm_lock_try_acquire "$SEED_HOME_CLAIM"; then
+    echo "error: secondmate home is already being seeded: $home" >&2
+    SEED_HOME_CLAIM=
+    return 1
+  fi
+  SEED_HOME_CLAIM_OWNER=$FM_LOCK_OWNER_DIR
+  SEED_HOME_CLAIM_HELD=1
+}
+
+seed_home_claim_is_owned() {
+  [ "$SEED_HOME_CLAIM_HELD" -eq 1 ] || return 1
+  [ -n "$SEED_HOME_CLAIM" ] && [ -n "$SEED_HOME_CLAIM_OWNER" ] || return 1
+  fm_lock_points_to_owner "$SEED_HOME_CLAIM" "$SEED_HOME_CLAIM_OWNER"
+}
+
+seed_home_claim_release() {
+  [ "$SEED_HOME_CLAIM_HELD" -eq 1 ] || return 0
+  seed_home_claim_is_owned || {
+    echo "error: secondmate home seed claim changed unexpectedly: $SEED_HOME_CLAIM" >&2
+    return 1
+  }
+  fm_lock_release "$SEED_HOME_CLAIM" || return 1
+  SEED_HOME_CLAIM=
+  SEED_HOME_CLAIM_OWNER=
+  SEED_HOME_CLAIM_HELD=0
+}
+
 seed_exit_cleanup() {
   seed_rollback
+  seed_workspace_registry_lock_release
+  seed_home_claim_release || true
   seed_registry_lock_release
 }
 SEED_HOME=
@@ -530,6 +596,8 @@ SEED_SUB_REG_EXISTED=0
 SEED_CHARTER_EXISTED=0
 SEED_MARKER_EXISTED=0
 SEED_PARENT_MARKER_EXISTED=0
+SEED_WORKSPACE_ID=
+SEED_WORKSPACE_RECEIPT=
 
 restore_seed_file() {
   local existed=$1 backup=$2 path=$3
@@ -591,6 +659,10 @@ seed_return_treehouse_home() {
 seed_remove_created_home() {
   local home=$1 abs_home
   abs_home=$(seed_rollback_target "$home" "created home") || return 0
+  seed_home_claim_is_owned || {
+    echo "REFUSED: created home rollback no longer owns the target claim for $abs_home" >&2
+    return 0
+  }
   rm -rf -- "$abs_home" 2>/dev/null || true
 }
 
@@ -646,6 +718,13 @@ seed_rollback() {
           [ -n "$project_path" ] || continue
           seed_remove_created_project "$project_path"
         done < "$SEED_CREATED_PROJECTS_FILE"
+      fi
+      if [ -n "${SEED_WORKSPACE_RECEIPT:-}" ] && [ -n "${SEED_WORKSPACE_ID:-}" ]; then
+        (
+          unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+          FM_HOME="$SEED_HOME" "$FM_ROOT/bin/fm-workspace.sh" _release-copy "$SEED_WORKSPACE_ID" \
+            --receipt "$SEED_WORKSPACE_RECEIPT" --rollback --registry-lock-held >/dev/null 2>&1
+        ) || true
       fi
       if [ -n "${SEED_BACKUP_DIR:-}" ] && [ "${SEED_HOME_BACKED_UP:-0}" = 1 ]; then
         restore_seed_file "$SEED_MARKER_EXISTED" "$SEED_BACKUP_DIR/marker" "$SEED_HOME/$SUB_HOME_MARKER"
@@ -744,20 +823,25 @@ write_registry() {
   mv "$tmp" "$REG"
 }
 
-refuse_populated_projectless_home() {
-  local home=$1 project_path project registry_entries
+refuse_populated_home_project_data() {
+  local home=$1 route=${2:-projectless} project_path project registry_entries
   local clones=()
   local registry_projects=()
+  local route_label='project-less secondmate home' clean_label='--no-projects'
+  if [ "$route" = workspace ]; then
+    route_label='workspace-backed secondmate home'
+    clean_label='an external-workspace pointer'
+  fi
   if [ -L "$home/projects" ]; then
-    echo "error: cannot inspect existing projects directory at $home/projects because it is a symlink; resolve the symlink or retire or clean this home before seeding with --no-projects" >&2
+    echo "error: cannot inspect existing projects directory at $home/projects because it is a symlink; resolve the symlink or retire or clean this home before seeding with $clean_label" >&2
     return 1
   fi
   if [ -e "$home/projects" ] && [ ! -d "$home/projects" ]; then
-    echo "error: cannot inspect existing projects directory at $home/projects because it is not a directory; resolve its path or retire or clean this home before seeding with --no-projects" >&2
+    echo "error: cannot inspect existing projects directory at $home/projects because it is not a directory; resolve its path or retire or clean this home before seeding with $clean_label" >&2
     return 1
   fi
   if [ -d "$home/projects" ] && ! find -P "$home/projects" -mindepth 1 -maxdepth 1 -print >/dev/null 2>&1; then
-    echo "error: cannot inspect existing projects directory at $home/projects; resolve its access permissions or retire or clean this home before seeding with --no-projects" >&2
+    echo "error: cannot inspect existing projects directory at $home/projects; resolve its access permissions or retire or clean this home before seeding with $clean_label" >&2
     return 1
   fi
   for project_path in "$home/projects"/* "$home/projects"/.[!.]* "$home/projects"/..?*; do
@@ -766,7 +850,7 @@ refuse_populated_projectless_home() {
   done
   if [ -f "$home/data/projects.md" ]; then
     registry_entries=$(awk '$1 == "-" && $2 != "" { print $2 }' "$home/data/projects.md") || {
-      echo "error: cannot inspect existing project registry at $home/data/projects.md; resolve its access permissions or retire or clean this home before seeding with --no-projects" >&2
+      echo "error: cannot inspect existing project registry at $home/data/projects.md; resolve its access permissions or retire or clean this home before seeding with $clean_label" >&2
       return 1
     }
     while IFS= read -r project; do
@@ -775,16 +859,19 @@ refuse_populated_projectless_home() {
   fi
   [ "${#clones[@]}" -eq 0 ] && [ "${#registry_projects[@]}" -eq 0 ] && return 0
 
-  echo "error: cannot seed project-less secondmate home $home because it contains project data" >&2
+  echo "error: cannot seed $route_label $home because it contains project data" >&2
   if [ "${#clones[@]}" -gt 0 ]; then
     printf 'error: projects/ entries: %s\n' "$(join_projects "${clones[@]}")" >&2
   fi
   if [ "${#registry_projects[@]}" -gt 0 ]; then
     printf 'error: data/projects.md entries: %s\n' "$(join_projects "${registry_projects[@]}")" >&2
   fi
-  echo "error: retire or clean this home first before seeding with --no-projects" >&2
+  echo "error: retire or clean this home first before seeding with $clean_label" >&2
   return 1
 }
+
+refuse_populated_projectless_home() { refuse_populated_home_project_data "$1" projectless; }
+refuse_populated_pointer_home() { refuse_populated_home_project_data "$1" workspace; }
 
 refuse_projectful_projectless_charter() {
   local id=$1 brief=$2 project_clones
@@ -798,19 +885,49 @@ refuse_projectful_projectless_charter() {
   return 1
 }
 
+refuse_mismatched_workspace_charter() {  # <id> <brief> <workspace-id>
+  local id=$1 brief=$2 workspace_id=$3 workspace_pointers project_clones
+  workspace_pointers=$(brief_section_text "$brief" "Workspace pointers")
+  project_clones=$(brief_section_text "$brief" "Project clones")
+  if [ "$workspace_pointers" = "- $workspace_id" ] \
+    && printf '%s\n' "$project_clones" | grep -F "does not duplicate its member repositories" >/dev/null 2>&1 \
+    && ! printf '%s\n' "$project_clones" | grep -Eq '^[[:space:]]*-[[:space:]]+'; then
+    return 0
+  fi
+  printf 'error: existing charter brief at %s does not select workspace %s without project clones\n' "$brief" "$workspace_id" >&2
+  printf 'error: re-scaffold it with fm-brief.sh %s --secondmate --workspace %s or remove the stale brief before seeding\n' "$id" "$workspace_id" >&2
+  return 1
+}
+
 seed_home() {
-  local id=$1 requested_home=$2 requested_abs home projects_csv project project_dst charter_summary charter_scope
-  local no_projects=0 arg
+  local id=$1 requested_home=$2 requested_abs home projects_csv project project_dst charter_summary charter_scope workspace_copy_result
+  local no_projects=0 workspace_id='' workspace_option=0 arg
   local filtered=()
   shift 2
-  # A deliberate --no-projects signal (anywhere in the project position) seeds a
-  # project-less home; an accidental omission with no signal still fails loudly.
-  for arg in "$@"; do
-    if [ "$arg" = "--no-projects" ]; then
-      no_projects=1
-    else
-      filtered+=("$arg")
-    fi
+  # Exactly one source shape is required: managed projects, one external
+  # workspace pointer, or the explicit project-less firstmate-repo case.
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    shift
+    case "$arg" in
+      --no-projects) no_projects=1 ;;
+      --workspace)
+        [ "$#" -gt 0 ] || { echo "error: --workspace requires a workspace id" >&2; return 1; }
+        [ "$workspace_option" -eq 0 ] || { echo "error: --workspace may be supplied only once" >&2; return 1; }
+        workspace_option=1
+        workspace_id=$1
+        shift
+        [ -n "$workspace_id" ] || { echo "error: --workspace requires a non-empty value" >&2; return 1; }
+        ;;
+      --workspace=*)
+        [ "$workspace_option" -eq 0 ] || { echo "error: --workspace may be supplied only once" >&2; return 1; }
+        workspace_option=1
+        workspace_id=${arg#--workspace=}
+        [ -n "$workspace_id" ] || { echo "error: --workspace requires a non-empty value" >&2; return 1; }
+        ;;
+      --*) echo "error: unknown secondmate seed option: $arg" >&2; return 1 ;;
+      *) filtered+=("$arg") ;;
+    esac
   done
   if [ "${#filtered[@]}" -gt 0 ]; then
     set -- "${filtered[@]}"
@@ -819,8 +936,12 @@ seed_home() {
   fi
   if [ "$no_projects" -eq 1 ]; then
     [ $# -eq 0 ] || { echo "error: --no-projects cannot be combined with a project list" >&2; return 1; }
+    [ "$workspace_option" -eq 0 ] || { echo "error: --no-projects cannot be combined with --workspace" >&2; return 1; }
+  elif [ "$workspace_option" -eq 1 ]; then
+    [ $# -eq 0 ] || { echo "error: --workspace cannot be combined with a project list" >&2; return 1; }
+    FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" show "$workspace_id" >/dev/null || return 1
   else
-    [ $# -gt 0 ] || { echo "error: secondmate needs at least one project, or --no-projects for a project-less home" >&2; return 1; }
+    [ $# -gt 0 ] || { echo "error: secondmate needs a project list, --workspace <workspace-id>, or --no-projects" >&2; return 1; }
   fi
 
   mkdir -p "$STATE" || return 1
@@ -848,6 +969,8 @@ seed_home() {
   SEED_PARENT_BRIEF="$DATA/$id/brief.md"
   SEED_PARENT_BRIEF_CREATED=0
   SEED_PARENT_BRIEF_DIR_CREATED=0
+  SEED_WORKSPACE_ID=$workspace_id
+  SEED_WORKSPACE_RECEIPT=
   SEED_SUB_REG_EXISTED=0
   SEED_CHARTER_EXISTED=0
   SEED_MARKER_EXISTED=0
@@ -860,10 +983,20 @@ seed_home() {
     SEED_HOME_ACQUIRED=1
     home=$(acquire_treehouse_home "$id")
     SEED_HOME="$home"
+    if [ -n "$workspace_id" ]; then
+      FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$home" --check-only >/dev/null || return 1
+    fi
     home=$(verify_firstmate_home "$home")
   else
     requested_abs=$(abs_path_for_new "$requested_home")
     refuse_active_home_path "$requested_abs" || return 1
+    if [ -n "$workspace_id" ]; then
+      FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$requested_abs" --check-only >/dev/null || return 1
+    fi
+    seed_home_claim_acquire "$requested_abs" || return 1
+    if [ -n "$workspace_id" ]; then
+      FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$requested_abs" --check-only >/dev/null || return 1
+    fi
     validate_home_assignment "$id" "$requested_abs" || return 1
     SEED_HOME="$requested_abs"
     [ -e "$requested_abs" ] || SEED_HOME_CREATED=1
@@ -879,6 +1012,11 @@ seed_home() {
     refuse_populated_projectless_home "$home" || return 1
     if [ -f "$SEED_PARENT_BRIEF" ]; then
       refuse_projectful_projectless_charter "$id" "$SEED_PARENT_BRIEF" || return 1
+    fi
+  elif [ -n "$workspace_id" ]; then
+    refuse_populated_pointer_home "$home" || return 1
+    if [ -f "$SEED_PARENT_BRIEF" ]; then
+      refuse_mismatched_workspace_charter "$id" "$SEED_PARENT_BRIEF" "$workspace_id" || return 1
     fi
   fi
   mkdir -p "$DATA" "$home/data" "$home/state" "$home/config" "$home/projects"
@@ -908,6 +1046,8 @@ seed_home() {
     [ -d "$DATA/$id" ] || SEED_PARENT_BRIEF_DIR_CREATED=1
     if [ "$no_projects" -eq 1 ]; then
       "$FM_ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects
+    elif [ -n "$workspace_id" ]; then
+      "$FM_ROOT/bin/fm-brief.sh" "$id" --secondmate --workspace "$workspace_id"
     else
       "$FM_ROOT/bin/fm-brief.sh" "$id" --secondmate "$@"
     fi
@@ -928,20 +1068,35 @@ seed_home() {
     return 1
   }
 
-  for project in "$@"; do
-    project_dst=$(validate_project_destination "$home" "$project") || return 1
-    [ -e "$project_dst" ] || printf '%s\n' "$project_dst" >> "$SEED_CREATED_PROJECTS_FILE"
-    clone_project "$project" "$home"
-  done
-  sync_project_registry "$home" "$@"
-  for project in "$@"; do
-    project_dst=$(validate_project_destination "$home" "$project") || return 1
-    if seed_project_was_created "$project_dst"; then
-      initialize_no_mistakes_project "$home" "$project" 1
-    else
-      initialize_no_mistakes_project "$home" "$project" 0
-    fi
-  done
+  if [ -n "$workspace_id" ]; then
+    seed_workspace_registry_lock_acquire "$home" || return 1
+    SEED_WORKSPACE_RECEIPT="seed-$$-${RANDOM:-0}-${RANDOM:-0}"
+    workspace_copy_result=$(FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" \
+      --to-home "$home" --receipt "$SEED_WORKSPACE_RECEIPT" --target-registry-lock-held)
+    case "$workspace_copy_result" in
+      "copied workspace $workspace_id to "*) ;;
+      "workspace $workspace_id already matches in "*) SEED_WORKSPACE_RECEIPT= ;;
+      *)
+        echo "error: workspace copy returned an unrecognized result for $workspace_id" >&2
+        return 1
+        ;;
+    esac
+  else
+    for project in "$@"; do
+      project_dst=$(validate_project_destination "$home" "$project") || return 1
+      [ -e "$project_dst" ] || printf '%s\n' "$project_dst" >> "$SEED_CREATED_PROJECTS_FILE"
+      clone_project "$project" "$home"
+    done
+    sync_project_registry "$home" "$@"
+    for project in "$@"; do
+      project_dst=$(validate_project_destination "$home" "$project") || return 1
+      if seed_project_was_created "$project_dst"; then
+        initialize_no_mistakes_project "$home" "$project" 1
+      else
+        initialize_no_mistakes_project "$home" "$project" 0
+      fi
+    done
+  fi
 
   cp "$SEED_PARENT_BRIEF" "$home/data/charter.md"
 
@@ -961,7 +1116,20 @@ seed_home() {
   mv -f -- "$home/$SUB_HOME_MARKER.tmp.$$" "$home/$SUB_HOME_MARKER"
   write_registry "$id" "$home" "$projects_csv" "$SEED_PARENT_BRIEF"
   validate_registry
+  if [ -n "$workspace_id" ]; then
+    FM_HOME="$home" "$FM_ROOT/bin/fm-workspace.sh" show "$workspace_id" >/dev/null || return 1
+  fi
+  if [ -n "$SEED_WORKSPACE_RECEIPT" ]; then
+    (
+      unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+      FM_HOME="$home" "$FM_ROOT/bin/fm-workspace.sh" _release-copy "$workspace_id" \
+        --receipt "$SEED_WORKSPACE_RECEIPT" --registry-lock-held >/dev/null
+    ) || return 1
+    SEED_WORKSPACE_RECEIPT=
+  fi
   SEED_COMMITTED=1
+  seed_workspace_registry_lock_release
+  seed_home_claim_release || return 1
   seed_registry_lock_release
   trap - EXIT
   rm -rf -- "$SEED_BACKUP_DIR"

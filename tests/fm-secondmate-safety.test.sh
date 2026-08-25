@@ -414,6 +414,8 @@ EOF
     || grep -F 'repository' "$err" >/dev/null \
     || fail "seed failure did not include the clone error"
   [ ! -e "$subhome" ] || fail "failed seed left the newly created secondmate home behind"
+  [ ! -e "$subhome.fm-home-seed.lock" ] && [ ! -L "$subhome.fm-home-seed.lock" ] \
+    || fail "failed seed left its target-home claim behind"
   [ ! -e "$subhome/.fm-secondmate-home" ] || fail "failed seed left a subhome marker"
   [ ! -e "$subhome/projects/alpha" ] || fail "failed seed left a previously cloned project"
   [ ! -e "$home/data/rollback/brief.md" ] || fail "failed seed left a generated charter brief"
@@ -1531,13 +1533,13 @@ test_secondmate_teardown_retires_empty_home() {
   subhome_abs=$(cd "$subhome" && pwd -P)
   cat > "$home/state/domain.meta" <<EOF
 window=firstmate:fm-domain
-worktree=$subhome
-project=$subhome
+worktree=$subhome_abs
+project=$subhome_abs
 harness=echo
 kind=secondmate
 mode=secondmate
 yolo=off
-home=$subhome
+home=$subhome_abs
 projects=alpha
 EOF
   printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
@@ -1808,13 +1810,13 @@ test_secondmate_teardown_refuses_failed_leased_home_return() {
   subhome_abs=$(cd "$subhome" && pwd -P)
   cat > "$home/state/domain.meta" <<EOF
 window=firstmate:fm-domain
-worktree=$subhome
-project=$subhome
+worktree=$subhome_abs
+project=$subhome_abs
 harness=echo
 kind=secondmate
 mode=secondmate
 yolo=off
-home=$subhome
+home=$subhome_abs
 projects=alpha
 EOF
   printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
@@ -1864,13 +1866,13 @@ test_secondmate_teardown_removes_plain_clone_home_without_treehouse_return() {
   subhome_abs=$(cd "$subhome" && pwd -P)
   cat > "$home/state/domain.meta" <<EOF
 window=firstmate:fm-domain
-worktree=$subhome
-project=$subhome
+worktree=$subhome_abs
+project=$subhome_abs
 harness=echo
 kind=secondmate
 mode=secondmate
 yolo=off
-home=$subhome
+home=$subhome_abs
 projects=alpha
 EOF
   printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
@@ -1889,7 +1891,7 @@ EOF
 }
 
 test_secondmate_force_teardown_discards_child_work() {
-  local home subhome childproj childwt fakebin log
+  local home subhome subhome_abs childproj childwt fakebin log
   home="$TMP_ROOT/force-teardown-home"
   subhome="$TMP_ROOT/force-teardown-subhome"
   childproj="$subhome/projects/alpha"
@@ -1897,15 +1899,16 @@ test_secondmate_force_teardown_discards_child_work() {
   mkdir -p "$home/state" "$home/data" "$subhome/state"
   fm_git_worktree "$childproj" "$childwt" force-child
   printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  subhome_abs=$(cd "$subhome" && pwd -P)
   cat > "$home/state/domain.meta" <<EOF
 window=firstmate:fm-domain
-worktree=$subhome
-project=$subhome
+worktree=$subhome_abs
+project=$subhome_abs
 harness=echo
 kind=secondmate
 mode=secondmate
 yolo=off
-home=$subhome
+home=$subhome_abs
 projects=alpha
 EOF
   printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
@@ -2081,7 +2084,7 @@ SH
 }
 
 test_secondmate_force_teardown_allows_non_state_operational_dir_symlinks_inside_home() {
-  local opdir home subhome target fakebin err log
+  local opdir home subhome subhome_abs target fakebin err log
   for opdir in data config projects; do
     home="$TMP_ROOT/symlink-inside-teardown-home-$opdir"
     subhome="$TMP_ROOT/symlink-inside-teardown-subhome-$opdir"
@@ -2090,16 +2093,17 @@ test_secondmate_force_teardown_allows_non_state_operational_dir_symlinks_inside_
     rm -rf "$home" "$subhome"
     mkdir -p "$home/state" "$home/data" "$subhome" "$target"
     printf 'domain\n' > "$subhome/.fm-secondmate-home"
+    subhome_abs=$(cd "$subhome" && pwd -P)
     ln -s "$target" "$subhome/$opdir"
     cat > "$home/state/domain.meta" <<EOF
 window=firstmate:fm-domain
-worktree=$subhome
-project=$subhome
+worktree=$subhome_abs
+project=$subhome_abs
 harness=echo
 kind=secondmate
 mode=secondmate
 yolo=off
-home=$subhome
+home=$subhome_abs
 projects=alpha
 EOF
     printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
