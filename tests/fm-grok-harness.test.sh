@@ -17,29 +17,15 @@ make_spawn_fakebin() {
 set -u
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-  *"#{pane_id}|#{pane_tty}"*) printf '%%42|/dev/ttys042\n'; exit 0 ;;
-  *"#{pane_id}"*) printf '%%42\n'; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
-  new-window) printf '@42\n'; exit 0 ;;
-  has-session|new-session|set-window-option|send-keys|kill-window) exit 0 ;;
+  has-session|new-session|new-window|send-keys|kill-window) exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  cat > "$fakebin/ps" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "$*" in
-  *'-t ttys042 -o pid=,pgid=,tpgid='*) printf '4242 4242 4242\n'; exit 0 ;;
-  *'-p 4242 -o pid=,lstart=,tty=,comm='*) printf '4242 Mon Aug 24 03:00:00 2026 ttys042 grok\n'; exit 0 ;;
-  *'-p 4242 -o args='*) printf 'grok\n'; exit 0 ;;
-esac
-exit 1
-SH
-  chmod +x "$fakebin/ps"
   fm_fake_exit0 "$fakebin" treehouse gh-axi gh
   printf '%s\n' "$fakebin"
 }

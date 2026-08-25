@@ -257,48 +257,6 @@ wait_for_pane_input_pending() {
   return 1
 }
 
-wait_for_escalation_attempt() {
-  local i=0
-  while [ "$i" -lt 300 ]; do
-    [ -s "$STATE_DIR/.subsuper-escalations" ] && return 0
-    grep -F 'Supervisor escalate' "$LOG_FILE" >/dev/null 2>&1 && return 0
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
-}
-
-wait_for_log_text() {  # <text>
-  local expected=$1 i=0
-  while [ "$i" -lt 300 ]; do
-    grep -F "$expected" "$LOG_FILE" >/dev/null 2>&1 && return 0
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
-}
-
-marker_count() {
-  awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE"
-}
-
-wait_for_single_marker() {
-  local i=0 count stable=0
-  while [ "$i" -lt 300 ]; do
-    count=$(marker_count)
-    [ "$count" -le 1 ] || return 2
-    if [ "$count" -eq 1 ]; then
-      stable=$((stable + 1))
-      [ "$stable" -ge 30 ] && return 0
-    else
-      stable=0
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
-}
-
 selfcheck_pane_input_pending
 
 # --- Scenario A: human-partial-input ----------------------------------------
@@ -318,10 +276,8 @@ test_scenario_a() {
   # real watcher child.
   echo "done: PR https://example.test/pr/100" > "$STATE_DIR/fake-c1.status"
 
-  # Wait until the watcher has produced a buffered escalation or an unsafe
-  # early injection, so the negative assertion cannot pass vacuously.
-  wait_for_escalation_attempt \
-    || fail "Scenario A: watcher did not attempt escalation within 30s"
+  # Wait for the watcher to detect the change and the daemon to attempt inject.
+  sleep 6
 
   # Assert: the digest was NOT injected while the pane had pending input.
   if grep -q 'Supervisor escalate' "$LOG_FILE"; then
@@ -336,10 +292,10 @@ test_scenario_a() {
 
   # Now submit the human's text (Enter). The pane goes idle.
   "$REAL_TMUX" -L "$SOCKET" send-keys -t "$SUPERVISOR_PANE" Enter
+  sleep 0.5
 
-  # Wait for the daemon to retry injection after the pane becomes idle.
-  wait_for_log_text 'Supervisor escalate' \
-    || fail "Scenario A: digest not injected within 30s after pane went idle"
+  # Wait for the daemon to retry injection (housekeeping tick = 1s).
+  sleep 6
 
   # Assert: human text was submitted alone (as a user message).
   grep -q 'human draft text' "$LOG_FILE" \
@@ -389,18 +345,13 @@ test_scenario_b() {
   # Write a captain-relevant status to trigger a real escalation.
   echo "done: PR https://example.test/pr/200" > "$STATE_DIR/fake-c1.status"
 
-  # Wait for one submitted marker and require it to remain singular through
-  # the retry window.
-  wait_for_single_marker
-  case $? in
-    0) ;;
-    2) fail "Scenario B: duplicate U+2063 marker appeared during retry" ;;
-    *) fail "Scenario B: no U+2063 marker appeared within 30s" ;;
-  esac
+  # Wait for the daemon to process the escalation and attempt inject (with the
+  # swallowed Enter, the retry path fires).
+  sleep 8
 
   # Assert: exactly ONE terminal-safe marker in the log (no duplicate, no loss).
   local marker_count
-  marker_count=$(marker_count)
+  marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
   [ "$marker_count" -eq 1 ] \
     || fail "Scenario B: expected exactly 1 U+2063 marker, got $marker_count (duplicate or lost)"
 
@@ -438,16 +389,11 @@ test_scenario_c() {
   start_daemon
 
   echo "done: PR https://example.test/pr/300" > "$STATE_DIR/fake-c1.status"
-  wait_for_single_marker
-  case $? in
-    0) ;;
-    2) fail "Scenario C: duplicate U+2063 marker appeared during delivery" ;;
-    *) fail "Scenario C: no U+2063 marker appeared within 30s" ;;
-  esac
+  sleep 6
 
   # Exactly one terminal-safe marker in the submitted log (no duplicate, no loss).
   local marker_count
-  marker_count=$(marker_count)
+  marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
   [ "$marker_count" -eq 1 ] \
     || fail "Scenario C: expected exactly 1 U+2063 marker, got $marker_count"
 

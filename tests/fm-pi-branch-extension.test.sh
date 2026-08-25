@@ -26,6 +26,7 @@ install_pi_branch_extension_fixture() {
     "$repo/node_modules/typebox"
   cp "$EXT" "$repo/.pi/extensions/fm-branch-supervision.ts"
   cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$repo/.pi/extensions/lib/fm-branch-dispatch.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
   mkdir -p "$repo/bin"
   cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
@@ -39,6 +40,12 @@ import { writeFileSync } from "node:fs";
 export function getAgentDir() {
   return "/stub-agent-dir";
 }
+
+export function getMarkdownTheme() {
+  return {};
+}
+
+export class UserMessageComponent {}
 
 export class DefaultResourceLoader {
   constructor(options) {
@@ -120,8 +127,37 @@ JS
 JSON
   cat > "$repo/node_modules/@earendil-works/pi-tui/index.js" <<'JS'
 export class Text {
-  constructor(text) {
+  constructor(text, paddingX, paddingY) {
     this.text = text;
+    this.paddingX = paddingX;
+    this.paddingY = paddingY;
+  }
+}
+
+export class Container {
+  constructor() {
+    this.children = [];
+  }
+  addChild(child) {
+    this.children.push(child);
+  }
+  clear() {
+    this.children = [];
+  }
+  render() {
+    return this.children.flatMap((child) => child.render?.() ?? []);
+  }
+}
+
+export class Box extends Container {
+  constructor(paddingX, paddingY, bgFn) {
+    super();
+    this.paddingX = paddingX;
+    this.paddingY = paddingY;
+    this.bgFn = bgFn;
+  }
+  setBgFn(bgFn) {
+    this.bgFn = bgFn;
   }
 }
 JS
@@ -138,6 +174,9 @@ export const Type = {
   },
   Number(options) {
     return { type: "number", ...(options ?? {}) };
+  },
+  Boolean(options) {
+    return { type: "boolean", ...(options ?? {}) };
   },
   Optional(schema) {
     return { ...schema, optional: true };
@@ -166,11 +205,8 @@ const approvedProject = `${home}/projects/approved`;
 mkdirSync(`${home}/state`, { recursive: true });
 mkdirSync(`${home}/config`, { recursive: true });
 mkdirSync(approvedProject, { recursive: true });
-// Most drivers exercise an explicitly granted project. Consent-gating cases
-// opt out so they can prove that absence itself preserves old behavior.
-if (!process.env.FM_TEST_SKIP_BRANCH_GRANT) {
-  writeFileSync(`${home}/config/pi-supervision-branch`, `project=${approvedProject}\n`);
-}
+writeFileSync(`${home}/state/branch-driver.meta`, `project=${approvedProject}\nwindow=fm-branch-driver\n`);
+writeFileSync(`${home}/config/pi-supervision-branch`, `project=${approvedProject}\n`);
 // The branch acts only for the session that owns the fleet lock; drivers own
 // it by default, while cold-start and secondary-session scenarios opt out.
 if (!process.env.FM_TEST_SKIP_LOCK) {
@@ -214,11 +250,12 @@ const pi = {
 function fire(event, payload, ctx) {
   for (const handler of piHandlers.get(event) ?? []) handler(payload, ctx);
 }
-function makeOffer(message, projects = [approvedProject], batch = { through: 1, digest: `sha256:${"0".repeat(64)}` }) {
+function makeOffer(message, projects = [approvedProject], heartbeat = false, eligible = projects.length > 0 || heartbeat) {
   const offer = {
     message,
     projects,
-    batch,
+    heartbeat,
+    eligible,
     accepted: false,
     accept() {
       offer.accepted = true;
@@ -226,8 +263,14 @@ function makeOffer(message, projects = [approvedProject], batch = { through: 1, 
   };
   return offer;
 }
-function dispatch(message, projects, batch) {
-  const offer = makeOffer(message, projects, batch);
+function dispatch(message, projects, heartbeat, eligible) {
+  const offer = makeOffer(message, projects, heartbeat, eligible);
+  if (offer.eligible) {
+    const row = offer.heartbeat
+      ? "1\t1\theartbeat\theartbeat\theartbeat\n"
+      : `1\t1\tsignal\tbranch-driver.status\t${message}\n`;
+    writeFileSync(`${home}/state/.wake-queue`, row);
+  }
   bus.emit("fm-branch-supervision:dispatch", offer);
   return offer;
 }
@@ -261,7 +304,7 @@ test_branch_dispatch_two_stage_filter_and_prefix_contract() {
     DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot }; })()`);
-const { fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot } = globalThis.__t;
+const { pi, fire, dispatch, settle, outcomeScript, sentToMain, mainUserMessages, mainTools, renderers, home, realRoot } = globalThis.__t;
 import { readFileSync, writeFileSync } from "node:fs";
 
 writeFileSync(`${home}/state/.lock`, `${process.ppid}\n`);
@@ -333,8 +376,31 @@ await report.execute("call-3", { task: "task-9", verdict: "captain", summary: "P
 if (sentToMain[2].options.triggerTurn !== true || sentToMain[2].options.deliverAs !== "followUp") {
   throw new Error(`captain merge must trigger exactly one follow-up turn: ${JSON.stringify(sentToMain[2].options)}`);
 }
-if (!sentToMain[2].message.content.includes("[captain] task-9: PR https://example.com/pr/9")) {
-  throw new Error(`captain note lost its content: ${sentToMain[2].message.content}`);
+if (typeof sentToMain[0].message.content !== "string" || !sentToMain[0].message.content.startsWith("⛵ ")) {
+  throw new Error(`routine note missing sailboat prefix: ${sentToMain[0].message.content}`);
+}
+if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
+  throw new Error(`routine note still has boilerplate: ${sentToMain[0].message.content}`);
+}
+// A routine note is rendered (display: true); a captain-facing note must
+// never be printed or rendered at all - the follow-up turn triggered above
+// is itself the captain-visible outcome. display: false is the exact flag
+// Pi's own chat renderer and HTML export both gate on before ever calling a
+// customType renderer, so this is the authoritative "never printed" proof.
+if (sentToMain[0].message.display !== true) {
+  throw new Error(`routine note must render: display=${sentToMain[0].message.display}`);
+}
+if (sentToMain[2].message.display !== false) {
+  throw new Error(`captain note must never be printed or rendered: display=${sentToMain[2].message.display}`);
+}
+if (typeof sentToMain[2].message.content !== "string" || sentToMain[2].message.content.includes("⚓")) {
+  throw new Error(`captain note must carry no anchor glyph now that it is never rendered: ${sentToMain[2].message.content}`);
+}
+if (!sentToMain[2].message.content.includes("task-9: PR https://example.com/pr/9")) {
+  throw new Error(`captain note lost its outcome: ${sentToMain[2].message.content}`);
+}
+if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[2].message.content)) {
+  throw new Error(`captain note still has boilerplate: ${sentToMain[2].message.content}`);
 }
 
 // The store (the owned durable contract) holds all three outcomes in order,
@@ -349,14 +415,85 @@ if (outcomeScript(["unread"]) !== "") throw new Error("merged outcomes were not 
 // renderer.
 const outcomesTool = mainTools.find((tool) => tool.name === "fm_branch_outcomes");
 if (!outcomesTool) throw new Error("fm_branch_outcomes was not registered on main");
+const renderTheme = {
+  fg(_color, text) { return text; },
+  bg(_color, text) { return text; },
+  bold(text) { return text; },
+};
+const renderContext = { state: {}, isError: false, isPartial: false };
+const stockResult = { content: [{ type: "text", text: "OUTCOME_DUMP" }] };
+const calmOffCall = outcomesTool.renderCall({}, renderTheme, renderContext);
+const calmOffResult = outcomesTool.renderResult(stockResult, { expanded: false, isPartial: false }, renderTheme, renderContext);
+if (calmOffCall.constructor.name !== "Box" || calmOffCall.paddingX !== 1 || calmOffCall.paddingY !== 1) {
+  throw new Error("fm_branch_outcomes changed its ordinary shell rendering");
+}
+if (calmOffResult.constructor.name !== "Container" || calmOffCall.children[0]?.text !== "fm_branch_outcomes" || calmOffCall.children[1]?.children[0]?.text !== "OUTCOME_DUMP") {
+  throw new Error("fm_branch_outcomes changed its ordinary call or result rendering");
+}
+pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: false });
+const calmOnCall = outcomesTool.renderCall({}, renderTheme, renderContext);
+const calmOnResult = outcomesTool.renderResult(stockResult, { expanded: false, isPartial: false }, renderTheme, renderContext);
+if (calmOnCall.constructor.name !== "Container" || calmOnCall.render(100).length !== 0 || calmOnResult.constructor.name !== "Container" || calmOnResult.render(100).length !== 0) {
+  throw new Error("fm_branch_outcomes remained visible while Calm was on");
+}
+pi.events.emit("firstmate:calm-presentation", { active: false, stockExportRendering: false });
+if (outcomesTool.renderCall({}, renderTheme, renderContext).constructor.name !== "Box" || outcomesTool.renderResult(stockResult, { expanded: false, isPartial: false }, renderTheme, renderContext).constructor.name !== "Container") {
+  throw new Error("fm_branch_outcomes did not restore ordinary rendering when Calm was turned off");
+}
+pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: true });
+let exportCallFellBack = false;
+let exportResultFellBack = false;
+try {
+  outcomesTool.renderCall({}, renderTheme, renderContext);
+} catch {
+  exportCallFellBack = true;
+}
+try {
+  outcomesTool.renderResult(stockResult, { expanded: false, isPartial: false }, renderTheme, renderContext);
+} catch {
+  exportResultFellBack = true;
+}
+if (!exportCallFellBack || !exportResultFellBack) {
+  throw new Error("fm_branch_outcomes replaced Pi stock export rendering");
+}
 const listed = await outcomesTool.execute("call-4", { recent: 2 }, undefined, undefined, {});
 const listedText = listed.content[0].text;
 if (listedText.split("\n").length !== 2 || !listedText.includes("checks green")) {
   throw new Error(`fm_branch_outcomes did not read the store: ${listedText}`);
 }
 if (!renderers.has("fm-branch-merge")) throw new Error("merge-note renderer missing");
-const rendered = renderers.get("fm-branch-merge")({ content: "note body" }, { expanded: false }, { fg: (_c, text) => text });
-if (rendered.text !== "note body") throw new Error("merge-note renderer dropped the note");
+const assertRenderedNote = (note, glyph) => {
+  const fgCalls = [];
+  const rendered = renderers.get("fm-branch-merge")(
+    { content: note },
+    { expanded: false },
+    {
+      fg(color, text) {
+        fgCalls.push({ color, text });
+        return text;
+      },
+    },
+  );
+  if (!String(rendered.text).includes(glyph)) throw new Error(`renderer dropped ${glyph}: ${rendered.text}`);
+  if (String(rendered.text).includes("branch merged")) throw new Error(`renderer kept boilerplate: ${rendered.text}`);
+  if (rendered.paddingX === 0 && rendered.paddingY === 0) {
+    throw new Error("renderer still pads with 0,0 instead of outputPad");
+  }
+  if (rendered.paddingX !== 1 || rendered.paddingY !== 0) {
+    throw new Error(
+      `renderer padding should match real Pi messages (outputPad, 0), got ${rendered.paddingX},${rendered.paddingY}`,
+    );
+  }
+  const glyphCalls = fgCalls.filter((call) => call.text === glyph);
+  if (glyphCalls.length !== 1 || glyphCalls[0].color === "dim") {
+    throw new Error(`icon ${glyph} must carry color, not dim: ${JSON.stringify(fgCalls)}`);
+  }
+  const restCalls = fgCalls.filter((call) => call.text !== glyph);
+  if (restCalls.length === 0 || restCalls.some((call) => call.color !== "dim")) {
+    throw new Error(`note remainder must be dim: ${JSON.stringify(fgCalls)}`);
+  }
+};
+assertRenderedNote(sentToMain[0].message.content, "⛵");
 process.exit(0);
 EOF
   status=$?
@@ -402,14 +539,14 @@ EOF
   pass "branch prompt_cache_key is stable per home across sessions and distinct between homes"
 }
 
-test_branch_gating_config_afk_and_fallback() {
+test_branch_project_grant_afk_and_fallback() {
   local repo broken home out status
   repo="$TMP_ROOT/gating-root"
   broken="$TMP_ROOT/gating-broken-root"
   home="$TMP_ROOT/gating-home"
   mkdir -p "$home/state" "$home/config" "$broken/bin"
   install_pi_branch_extension_fixture "$repo"
-  cp "$ROOT/bin/fm-lease.sh" "$ROOT/bin/fm-lease-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$broken/bin/"
+  cp "$ROOT/bin/fm-lease.sh" "$ROOT/bin/fm-lease-lib.sh" "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-wake-grant.sh" "$broken/bin/"
   cat > "$broken/bin/fm-branch-prompt.sh" <<'SH'
 #!/usr/bin/env bash
 echo "synthetic generator failure" >&2
@@ -417,59 +554,114 @@ exit 1
 SH
   chmod +x "$broken/bin/fm-branch-prompt.sh"
   PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    FM_TEST_SKIP_BRANCH_GRANT=1 DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
 const prelude = process.env.DRIVER_PRELUDE;
-await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, settle, home }; })()`);
-const { dispatch, fire, settle, home } = globalThis.__t;
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, settle, home, sentToMain }; })()`);
+const { dispatch, fire, settle, home, sentToMain } = globalThis.__t;
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
-// No autonomy grant: session activation and wake routing both preserve the
-// old path, with no branch-owned runtime state merely because Pi loaded it.
+rmSync(`${home}/config/pi-supervision-branch`);
 fire("session_start", {});
-if (dispatch("signal: while unconfigured").accepted) throw new Error("unconfigured branch accepted a wake");
-if (existsSync(`${home}/state/.pi-branch-extension-loaded`)) throw new Error("unconfigured branch activated runtime state");
-
-// Empty, explicit off, and malformed values also fail closed.
-writeFileSync(`${home}/config/pi-supervision-branch`, "\n");
-if (dispatch("signal: while empty").accepted) throw new Error("empty grant accepted a wake");
-writeFileSync(`${home}/config/pi-supervision-branch`, "off\n");
-if (dispatch("signal: while disabled").accepted) throw new Error("disabled branch accepted a wake");
-writeFileSync(`${home}/config/pi-supervision-branch`, "yes\n");
-if (dispatch("signal: while malformed").accepted) throw new Error("malformed grant accepted a wake");
-
-// An exact project opt-in grants the role, but away mode still owns supervision.
+if (dispatch("signal: ungranted task wake").accepted) {
+  throw new Error("a task-scoped wake was accepted with no grant file present");
+}
+if (existsSync(`${home}/state/.pi-branch-extension-loaded`)) {
+  throw new Error("an absent grant activated branch runtime state");
+}
 writeFileSync(`${home}/config/pi-supervision-branch`, `project=${home}/projects/approved\n`);
+if (!dispatch("signal: granted task wake").accepted) {
+  throw new Error("a task-scoped wake was refused with its exact project grant present");
+}
+if (!existsSync(`${home}/state/.pi-branch-extension-loaded`)) {
+  throw new Error("a valid project grant did not activate the branch");
+}
+await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "granted task wake prompt");
+
+if (dispatch("heartbeat", [], true, true).accepted) throw new Error("fleet-wide heartbeat was accepted by a project grant");
+if (dispatch("signal: ungranted project", [`${home}/projects/other`]).accepted) {
+  throw new Error("an ungranted project was accepted");
+}
+if (dispatch("signal: mixed projects", [`${home}/projects/approved`, `${home}/projects/other`]).accepted) {
+  throw new Error("a mixed-project wake was accepted");
+}
+writeFileSync(`${home}/config/pi-supervision-branch`, "on\n");
+if (dispatch("signal: malformed grant").accepted) throw new Error("a malformed grant was accepted");
+writeFileSync(`${home}/config/pi-supervision-branch`, `project=${home}/projects/approved\n`);
+
+// The branch can downgrade its deeper review to a silent routine outcome or
+// escalate a captain-worthy finding into one main turn.
+const heartbeatSession = globalThis.__fmSessions[globalThis.__fmSessions.length - 1];
+const heartbeatReport = heartbeatSession.options.customTools.find((tool) => tool.name === "fm_branch_report");
+await heartbeatReport.execute(
+  "heartbeat-noop",
+  { task: "fleet", verdict: "routine", summary: "fleet reviewed, nothing changed", silent: true },
+  undefined,
+  undefined,
+  {},
+);
+const noopMerge = sentToMain[sentToMain.length - 1];
+if (noopMerge.options.triggerTurn) throw new Error("a no-op heartbeat pass must not open a main turn");
+if (noopMerge.message.display !== false) throw new Error("a no-op heartbeat pass must not render a merge note");
+const storedNoop = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8")
+  .trim()
+  .split("\n")
+  .map((line) => JSON.parse(line))
+  .find((row) => row.task === "fleet" && row.summary === "fleet reviewed, nothing changed");
+if (!storedNoop || storedNoop.verdict !== "routine" || storedNoop.silent !== true) {
+  throw new Error("the silent no-op heartbeat disposition was not stored durably");
+}
+await heartbeatReport.execute(
+  "fleet-routine-action",
+  { task: "fleet", verdict: "routine", summary: "reconciled the backlog after completed work" },
+  undefined,
+  undefined,
+  {},
+);
+const fleetRoutineMerge = sentToMain[sentToMain.length - 1];
+if (fleetRoutineMerge.message.display !== true) throw new Error("a fleet routine action must render");
+if (!fleetRoutineMerge.message.content.startsWith("⛵ fleet: reconciled the backlog after completed work")) {
+  throw new Error(`fleet routine action note changed: ${fleetRoutineMerge.message.content}`);
+}
+await heartbeatReport.execute(
+  "task-routine",
+  { task: "task-9", verdict: "routine", summary: "worker healthy, no action needed" },
+  undefined,
+  undefined,
+  {},
+);
+const taskRoutineMerge = sentToMain[sentToMain.length - 1];
+if (taskRoutineMerge.message.display !== true) throw new Error("a task-scoped routine outcome must render");
+if (!taskRoutineMerge.message.content.startsWith("⛵ task-9: worker healthy, no action needed")) {
+  throw new Error(`task-scoped routine note changed: ${taskRoutineMerge.message.content}`);
+}
+await heartbeatReport.execute(
+  "heartbeat-finding",
+  { task: "fleet", verdict: "captain", summary: "task-2 has been stuck for an hour" },
+  undefined,
+  undefined,
+  {},
+);
+const captainMerge = sentToMain[sentToMain.length - 1];
+if (captainMerge.options.triggerTurn !== true) throw new Error("a captain-worthy heartbeat finding must open a main turn");
+if (captainMerge.message.display !== false) throw new Error("the heartbeat captain-facing note must not be printed");
+
+// Every other fleet-wide or unresolvable wake (empty projects, not a
+// heartbeat) still keeps the wake-to-main path.
+if (dispatch("check: unresolved fleet event", []).accepted) {
+  throw new Error("branch accepted an unscoped, non-heartbeat fleet wake");
+}
+
+// Away mode still owns supervision regardless of project eligibility.
 writeFileSync(`${home}/state/.afk`, "");
 if (dispatch("signal: while afk").accepted) throw new Error("branch accepted a wake during away mode");
-
-// Same build, gates cleared: only wakes wholly inside the granted project are
-// accepted. A mixed-project drain stays on main rather than extending standing
-// authority to the other project.
 rmSync(`${home}/state/.afk`);
-if (dispatch("heartbeat", []).accepted) {
-  throw new Error("branch accepted an unscoped fleet-wide wake");
-}
-if (dispatch("signal: other project", [`${home}/projects/other`]).accepted) {
-  throw new Error("branch accepted an out-of-scope project wake");
-}
-writeFileSync(
-  `${home}/config/pi-supervision-branch`,
-  `project=${home}/projects/approved\nproject=${home}/projects/other\n`,
-);
-if (dispatch("signal: mixed projects", [`${home}/projects/approved`, `${home}/projects/other`]).accepted) {
-  throw new Error("branch accepted a mixed-project wake");
-}
-writeFileSync(`${home}/config/pi-supervision-branch`, `project=${home}/projects/approved\n`);
 if (!dispatch("signal: gates cleared").accepted) throw new Error("branch refused a wake with gates cleared");
-await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "branch wake prompt");
-if (!(globalThis.__fmPrompts[0] ?? "").includes("bin/fm-wake-drain.sh --branch-batch 1 sha256:")) {
-  throw new Error(`branch prompt omitted its bound drain command: ${globalThis.__fmPrompts[0]}`);
-}
+await settle(() => (globalThis.__fmPrompts ?? []).length === 2, "branch wake prompts");
 process.exit(0);
 EOF
   status=$?
   out=$(cat "$TMP_ROOT/node-output")
-  expect_code 0 "$status" "config and afk gating must bind: $out"
+  expect_code 0 "$status" "project grants, fleet-wide routing, and afk gating must bind: $out"
 
   PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$TMP_ROOT/gating-home-2" FM_ROOT_OVERRIDE="$broken" \
     DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
@@ -492,7 +684,236 @@ EOF
   status=$?
   out=$(cat "$TMP_ROOT/node-output")
   expect_code 0 "$status" "broken-branch fallback must return wakes to main: $out"
-  pass "branch gating (config, afk) binds and a broken branch falls back to main"
+  pass "branch project grants and afk gating bind while a broken branch falls back to main"
+}
+
+test_branch_predrain_recheck_defers_new_ungranted_project() {
+  local repo home out status
+  repo="$TMP_ROOT/predrain-recheck-root"
+  home="$TMP_ROOT/predrain-recheck-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, home, mainUserMessages }; })()`);
+const { dispatch, fire, home, mainUserMessages } = globalThis.__t;
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+
+fire("session_start", {});
+const offer = dispatch("signal: granted task wake");
+if (!offer.accepted) throw new Error("granted task offer was not accepted");
+writeFileSync(`${home}/state/late-other.meta`, `project=${home}/projects/other\nwindow=fm-late-other\n`);
+appendFileSync(`${home}/state/.wake-queue`, "2\t2\tsignal\tlate-other.status\tsignal: late ungranted project\n");
+for (let i = 0; i < 250 && mainUserMessages.length === 0; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if ((globalThis.__fmPrompts ?? []).length !== 0) {
+  throw new Error("branch prompted after an ungranted project arrived before drain");
+}
+if (mainUserMessages.length !== 1 || !String(mainUserMessages[0].content).includes("FIRSTMATE WATCHER WAKE: signal: granted task wake")) {
+  throw new Error(`mixed queue did not fall back to main: ${JSON.stringify(mainUserMessages)}`);
+}
+const queue = readFileSync(`${home}/state/.wake-queue`, "utf8");
+if (!queue.includes("\tsignal\tbranch-driver.status\t") || !queue.includes("\tsignal\tlate-other.status\t")) {
+  throw new Error(`pre-drain fallback mutated the queued set: ${queue}`);
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "pre-drain grant re-check must defer a newly mixed-project queue to main: $out"
+  pass "pre-drain grant re-check defers a newly ungranted project"
+}
+
+# The non-heartbeat half of the same recheck: a check-kind row that arrives
+# after a signal/stale offer is accepted must stay main-owned WITHOUT bouncing
+# the branch's own eligible row back to main - the reproduction from the task
+# (docs/watcher-continuity.md "Per-actor acknowledgement"). Heartbeat keeps
+# its own, unchanged, all-or-nothing rule (proven above); this is the case
+# scopeForUnreadWake changed.
+test_branch_predrain_recheck_excludes_new_main_owned_row_without_deferring_eligible_work() {
+  local repo home out status
+  repo="$TMP_ROOT/predrain-partial-root"
+  home="$TMP_ROOT/predrain-partial-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, home, mainUserMessages }; })()`);
+const { dispatch, fire, home, mainUserMessages } = globalThis.__t;
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+
+fire("session_start", {});
+let releasePrompt;
+globalThis.__fmPromptGate = new Promise((resolve) => { releasePrompt = resolve; });
+const offer = dispatch("signal: task-local wake");
+if (!offer.accepted) throw new Error("eligible task-local offer was not accepted");
+// A main-only notice arrives while main is still finishing its own earlier
+// turn - unacked, still sitting in the queue - between offer acceptance and
+// the branch's own drain.
+appendFileSync(`${home}/state/.wake-queue`, "2\t2\tcheck\tx-inbox\tcheck: pending x mention\n");
+for (let i = 0; i < 250 && !globalThis.__fmPromptStarted && mainUserMessages.length === 0; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (mainUserMessages.length !== 0) {
+  throw new Error(`a co-present main-owned row bounced the whole mixed queue to main: ${JSON.stringify(mainUserMessages)}`);
+}
+if (!globalThis.__fmPromptStarted) {
+  throw new Error("the branch was never prompted even though its own row stayed eligible");
+}
+const snapshot = readFileSync(`${home}/state/.branch-eligible-rows`, "utf8").trim().split("\n");
+if (!snapshot.includes("1")) throw new Error(`eligible-row snapshot omitted the task-local row: ${snapshot}`);
+if (snapshot.includes("2")) throw new Error(`eligible-row snapshot granted the main-owned row: ${snapshot}`);
+const queue = readFileSync(`${home}/state/.wake-queue`, "utf8");
+if (!queue.includes("\tcheck\tx-inbox\t")) {
+  throw new Error(`the main-owned row must remain queued for main, untouched: ${queue}`);
+}
+releasePrompt();
+for (let i = 0; i < 250 && (globalThis.__fmPrompts ?? []).length === 0; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+for (let i = 0; i < 250 && existsSync(`${home}/state/.branch-eligible-rows`); i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (existsSync(`${home}/state/.branch-eligible-rows`)) {
+  throw new Error("settled branch prompt retained its row grant");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "pre-drain eligibility re-check must exclude only the new main-owned row: $out"
+  pass "pre-drain eligibility re-check excludes a newly main-owned row without deferring eligible work"
+}
+
+test_settled_branch_prompt_releases_unacknowledged_grant() {
+  local repo home out status
+  repo="$TMP_ROOT/settled-grant-root"
+  home="$TMP_ROOT/settled-grant-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, home, realRoot }; })()`);
+const { dispatch, fire, home, realRoot } = globalThis.__t;
+const { spawnSync } = await import("node:child_process");
+const { existsSync } = await import("node:fs");
+
+fire("session_start", {});
+if (!dispatch("signal: unacknowledged branch wake").accepted) {
+  throw new Error("eligible wake was not accepted");
+}
+for (let i = 0; i < 250 && (globalThis.__fmPrompts ?? []).length === 0; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if ((globalThis.__fmPrompts ?? []).length !== 1) throw new Error("branch prompt did not settle");
+for (let i = 0; i < 250 && existsSync(`${home}/state/.branch-eligible-rows`); i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (existsSync(`${home}/state/.branch-eligible-rows`)) {
+  throw new Error("settled prompt left its unacknowledged grant active");
+}
+const drain = spawnSync("bash", [`${realRoot}/bin/fm-wake-drain.sh`], {
+  encoding: "utf8",
+  env: { ...process.env, FM_HOME: home, FM_STATE_OVERRIDE: `${home}/state`, FM_ROOT_OVERRIDE: realRoot },
+});
+if (drain.status !== 0) throw new Error(`main drain failed after grant release: ${drain.stderr}`);
+if (!drain.stdout.includes("\tsignal\tbranch-driver.status\t")) {
+  throw new Error(`main could not replay the unacknowledged branch row: ${drain.stdout}`);
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "settled branch turns must release residual grants for main replay: $out"
+  pass "a settled branch turn releases an unacknowledged grant for main replay"
+}
+
+test_main_owned_grant_result_falls_back_to_main() {
+  local repo home out status
+  repo="$TMP_ROOT/main-owned-fallback-root"
+  home="$TMP_ROOT/main-owned-fallback-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, home, mainUserMessages }; })()`);
+const { dispatch, fire, home, mainUserMessages } = globalThis.__t;
+import { writeFileSync } from "node:fs";
+
+fire("session_start", {});
+const offer = dispatch("signal: interrupted main claim");
+if (!offer.accepted) throw new Error("eligible wake was not accepted before the ownership recheck");
+writeFileSync(`${home}/state/.main-eligible-rows`, "1\n");
+for (let i = 0; i < 250 && mainUserMessages.length === 0; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if ((globalThis.__fmPrompts ?? []).length !== 0) {
+  throw new Error("branch prompted for a row already claimed by main");
+}
+if (mainUserMessages.length !== 1) {
+  throw new Error(`main-owned row was silently absorbed: ${JSON.stringify(mainUserMessages)}`);
+}
+if (!String(mainUserMessages[0].content).includes("FIRSTMATE WATCHER WAKE: signal: interrupted main claim")) {
+  throw new Error(`fallback lost the durable wake: ${mainUserMessages[0].content}`);
+}
+if (mainUserMessages[0].options.deliverAs !== "followUp") {
+  throw new Error("main-owned fallback was not delivered as a follow-up");
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "a main-owned grant result must still deliver the wake to main: $out"
+  pass "a stale main claim cannot silently suppress later wake delivery"
+}
+
+test_branch_predrain_recheck_noops_already_drained_wake() {
+  local repo home out status
+  repo="$TMP_ROOT/predrain-empty-root"
+  home="$TMP_ROOT/predrain-empty-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { dispatch, fire, home, mainUserMessages }; })()`);
+const { dispatch, fire, home, mainUserMessages } = globalThis.__t;
+import { writeFileSync } from "node:fs";
+
+fire("session_start", {});
+let releaseFirst;
+globalThis.__fmPromptGate = new Promise((resolve) => {
+  releaseFirst = resolve;
+});
+if (!dispatch("signal: first queued wake").accepted) throw new Error("first wake was not accepted");
+for (let i = 0; i < 250 && !globalThis.__fmPromptStarted; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+if (!globalThis.__fmPromptStarted) throw new Error("first branch prompt did not start");
+if (!dispatch("signal: second queued wake").accepted) throw new Error("second queued project wake was not accepted");
+writeFileSync(`${home}/state/.wake-queue`, "");
+releaseFirst();
+for (let i = 0; i < 250 && (globalThis.__fmPrompts ?? []).length < 1; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+await new Promise((resolve) => setTimeout(resolve, 50));
+if ((globalThis.__fmPrompts ?? []).length !== 1) {
+  throw new Error(`already-drained wake prompted again: ${JSON.stringify(globalThis.__fmPrompts ?? [])}`);
+}
+if (mainUserMessages.length !== 0) {
+  throw new Error(`already-drained wake fell back to main: ${JSON.stringify(mainUserMessages)}`);
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "an already-drained serialized wake must no-op without main fallback: $out"
+  pass "pre-drain eligibility re-check no-ops an already-drained wake"
 }
 
 test_branch_mirror_filters_order_and_cursor() {
@@ -852,6 +1273,7 @@ test_rebind_remirrors_undelivered_dialog_from_durable_cursor() {
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { fire, home }; })()`);
 const { fire, home } = globalThis.__t;
+import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 // Instance A collects dialog at turn_end while no branch exists yet (nothing
@@ -894,10 +1316,12 @@ const replacement = await import(`${pathToFileURL(process.env.PLUGIN).href}?rebi
 replacement.default(replacementPi);
 for (const handler of replacementPiHandlers.get("session_start") ?? []) handler({}, ctx);
 for (const handler of replacementPiHandlers.get("turn_end") ?? []) handler({}, ctx);
+writeFileSync(`${home}/state/.wake-queue`, "1\t1\tsignal\tbranch-driver.status\tsignal: after rebind\n");
 const offer = {
   message: "signal: after rebind",
   projects: [`${home}/projects/approved`],
-  batch: { through: 1, digest: `sha256:${"0".repeat(64)}` },
+  heartbeat: false,
+  eligible: true,
   accepted: false,
   accept() {
     offer.accepted = true;
@@ -922,9 +1346,233 @@ EOF
   pass "an extension rebind re-mirrors undelivered dialog instead of dropping it"
 }
 
+# Direct unit coverage of fm-branch-dispatch.ts's classification, independent
+# of the Pi SDK stub: every legitimately main-only class (docs/pi-supervision-
+# branch.md) stays excluded from eligibleSeqs no matter its check-kind key,
+# a mixed queue keeps its task-local rows eligible without those main-only
+# rows vetoing the scan, and the eligible-row snapshot writer names exactly
+# the eligible set.
+test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot() {
+  local repo home out status
+  repo="$TMP_ROOT/dispatch-classify-root"
+  home="$TMP_ROOT/dispatch-classify-home"
+  mkdir -p "$repo/.pi/extensions/lib" "$home/state" "$home/projects/approved"
+  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$repo/.pi/extensions/lib/fm-branch-dispatch.ts"
+  printf 'project=%s/projects/approved\nwindow=fm-window\n' "$home" > "$home/state/task-a.meta"
+  LIB="$repo/.pi/extensions/lib/fm-branch-dispatch.ts" FM_HOME="$home" GRANT="$ROOT/bin/fm-wake-grant.sh" \
+    node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
+
+const { activateEligibleRowsOwner, scopeForUnreadWake, writeEligibleRowsSnapshot, releaseEligibleRowsSnapshot, BRANCH_ELIGIBLE_ROWS_FILE } =
+  await import(pathToFileURL(process.env.LIB).href);
+const state = `${process.env.FM_HOME}/state`;
+const project = `${process.env.FM_HOME}/projects/approved`;
+
+// Every legitimately main-only class is a check-kind row under a different
+// key; classification never looks at the key, only the kind, so one
+// representative per named class is sufficient coverage.
+const mainOnlyRows = [
+  "1\t1\tcheck\tx-inbox\tcheck: pending x mention",
+  "1\t1\tcheck\tsome-poll.check.sh\tcheck: some-poll.check.sh: merged",
+  "1\t1\tcheck\tunauthenticated-state-checks\tcheck: rejected unauthenticated state checks",
+];
+for (const row of mainOnlyRows) {
+  writeFileSync(`${state}/.wake-queue`, row);
+  const scope = scopeForUnreadWake(state, false);
+  if (scope.eligible || scope.eligibleSeqs.length !== 0) {
+    throw new Error(`a main-only class was offered to the branch: ${row} -> ${JSON.stringify(scope)}`);
+  }
+  if (scope.corrupted) throw new Error(`an ordinary main-only row must not read as corrupted: ${row}`);
+}
+
+writeFileSync(
+  `${state}/.wake-queue`,
+  [
+    "1\t1\tcheck\tx-inbox",
+    "1\t2\tsignal\ttask-a.status\tsignal: task-a.status",
+  ].join("\n"),
+);
+const truncated = scopeForUnreadWake(state, false);
+if (!truncated.corrupted || truncated.eligible || truncated.eligibleSeqs.length !== 0) {
+  throw new Error(`a four-field queue row was not classified as corruption: ${JSON.stringify(truncated)}`);
+}
+
+// A mixed queue: the main-only row (seq 1) never vetoes the task-local rows
+// (seq 2, 3) - the reproduction from the task.
+writeFileSync(
+  `${state}/.wake-queue`,
+  [
+    "1\t1\tcheck\tx-inbox\tcheck: pending x mention",
+    "1\t2\tsignal\ttask-a.status\tsignal: task-a.status",
+    "1\t3\tstale\tfm-window\tstale: fm-window",
+  ].join("\n"),
+);
+const mixed = scopeForUnreadWake(state, false);
+if (!mixed.eligible) throw new Error(`mixed queue with eligible task-local rows must stay eligible: ${JSON.stringify(mixed)}`);
+if (mixed.eligibleSeqs.slice().sort().join(",") !== "2,3") {
+  throw new Error(`eligibleSeqs must name exactly the task-local rows: ${JSON.stringify(mixed)}`);
+}
+if (!mixed.projects.includes(project)) {
+  throw new Error(`eligible project context lost: ${JSON.stringify(mixed.projects)}`);
+}
+
+writeFileSync(`${state}/fm-window.meta`, `project=${process.env.FM_HOME}/projects/other\nwindow=fm-other\n`);
+const staleCollision = scopeForUnreadWake(state, false);
+if (staleCollision.projects.length !== 1 || staleCollision.projects[0] !== project) {
+  throw new Error(`a task id matching another task's window changed stale routing: ${JSON.stringify(staleCollision)}`);
+}
+
+if (!activateEligibleRowsOwner(state, process.env.GRANT, process.pid, "fixture")) {
+  throw new Error("branch owner activation failed");
+}
+if (writeEligibleRowsSnapshot(state, mixed.eligibleSeqs, process.env.GRANT, "fixture") !== "published") {
+  throw new Error("snapshot write reported failure");
+}
+const snapshot = readFileSync(`${state}/${BRANCH_ELIGIBLE_ROWS_FILE}`, "utf8").trim().split("\n");
+if (snapshot.join(",") !== "2,3") throw new Error(`snapshot did not name exactly the eligible rows: ${snapshot}`);
+
+// An empty eligible set is refused rather than clearing the snapshot to
+// nothing - a caller must never overwrite a live snapshot with an empty one.
+if (writeEligibleRowsSnapshot(state, [], process.env.GRANT, "fixture") !== "error") {
+  throw new Error("an empty eligible set must not be written");
+}
+if (!releaseEligibleRowsSnapshot(state, process.env.GRANT, "fixture")) throw new Error("snapshot release failed");
+writeFileSync(`${state}/.main-eligible-rows`, "2\n");
+if (writeEligibleRowsSnapshot(state, ["2"], process.env.GRANT, "fixture") !== "main-owned") {
+  throw new Error("a row already claimed by main was not reported as main-owned");
+}
+
+// heartbeat keeps its own unchanged all-or-nothing rule: the same main-only
+// row that is merely excluded for a non-heartbeat scan still vetoes a
+// heartbeat review outright.
+const heartbeatMixed = scopeForUnreadWake(state, true);
+if (heartbeatMixed.eligible || !heartbeatMixed.corrupted) {
+  throw new Error(`a main-only row must still veto a heartbeat review: ${JSON.stringify(heartbeatMixed)}`);
+}
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "main-only classification and eligible-row snapshot contract must hold: $out"
+  pass "scopeForUnreadWake excludes every main-only class without vetoing eligible task-local rows, and writes the eligible snapshot"
+}
+
+test_outcomes_tool_uses_stock_execution_and_export_consumers() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo "skip: node not found for Pi outcomes rendering test"
+    return
+  fi
+  local package_dir fixture out status
+  package_dir=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
+  if [ ! -f "$package_dir/package.json" ]; then
+    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    return
+  fi
+  fixture="$TMP_ROOT/stock-render-consumers"
+  mkdir -p "$fixture/.pi/extensions/lib" "$fixture/node_modules/@earendil-works"
+  cp "$EXT" "$fixture/.pi/extensions/fm-branch-supervision.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$fixture/.pi/extensions/lib/fm-branch-dispatch.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$fixture/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$fixture/.pi/extensions/lib/fm-operational-input.ts"
+  ln -s "$package_dir" "$fixture/node_modules/@earendil-works/pi-coding-agent"
+  ln -s "$package_dir/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
+  ln -s "$package_dir/node_modules/typebox" "$fixture/node_modules/typebox"
+
+  out=$(cd "$fixture" && EXT="$fixture/.pi/extensions/fm-branch-supervision.ts" PI_PACKAGE_DIR="$package_dir" node --input-type=module 2>&1 <<'JS'
+import { pathToFileURL } from "node:url";
+
+const packageRoot = process.env.PI_PACKAGE_DIR;
+const [{ ToolExecutionComponent }, { createToolHtmlRenderer }, { initTheme, theme }] = await Promise.all([
+  import(pathToFileURL(`${packageRoot}/dist/modes/interactive/components/tool-execution.js`).href),
+  import(pathToFileURL(`${packageRoot}/dist/core/export-html/tool-renderer.js`).href),
+  import(pathToFileURL(`${packageRoot}/dist/modes/interactive/theme/theme.js`).href),
+]);
+initTheme("dark");
+
+const listeners = new Map();
+const tools = [];
+const pi = {
+  events: {
+    on(name, listener) {
+      listeners.set(name, [...(listeners.get(name) ?? []), listener]);
+    },
+    emit(name, data) {
+      for (const listener of listeners.get(name) ?? []) listener(data);
+    },
+  },
+  on() {},
+  registerCommand() {},
+  registerMessageRenderer() {},
+  registerTool(tool) { tools.push(tool); },
+  sendMessage() {},
+  sendUserMessage() {},
+};
+const extension = await import(`${pathToFileURL(process.env.EXT).href}?consumer=${Date.now()}`);
+extension.default(pi);
+const actualDefinition = tools.find((tool) => tool.name === "fm_branch_outcomes");
+if (!actualDefinition) throw new Error("fm_branch_outcomes was not registered");
+const stockDefinition = { ...actualDefinition };
+delete stockDefinition.renderShell;
+delete stockDefinition.renderCall;
+delete stockDefinition.renderResult;
+
+const args = { recent: 2 };
+const result = {
+  content: [{ type: "text", text: "\x1b[31mOUTCOME_ONE\x1b[0m\r\nOUT\u0000COME_TWO\uFFF9" }],
+  details: { ok: true },
+  isError: false,
+};
+const ui = { requestRender() {} };
+const stockRow = new ToolExecutionComponent("fm_branch_outcomes", "stock", args, { showImages: false }, stockDefinition, ui, process.cwd());
+const actualRow = new ToolExecutionComponent("fm_branch_outcomes", "actual", args, { showImages: false }, actualDefinition, ui, process.cwd());
+for (const row of [stockRow, actualRow]) {
+  row.markExecutionStarted();
+  row.setArgsComplete();
+  row.updateResult(result);
+}
+if (JSON.stringify(actualRow.render(100)) !== JSON.stringify(stockRow.render(100))) {
+  throw new Error(`Calm-off ToolExecutionComponent rendering differs from Pi stock: actual=${JSON.stringify(actualRow.render(100))} stock=${JSON.stringify(stockRow.render(100))}`);
+}
+pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: false });
+actualRow.invalidate();
+if (actualRow.render(100).length !== 0) {
+  throw new Error("Calm-on ToolExecutionComponent row remained visible");
+}
+pi.events.emit("firstmate:calm-presentation", { active: false, stockExportRendering: false });
+actualRow.invalidate();
+if (JSON.stringify(actualRow.render(100)) !== JSON.stringify(stockRow.render(100))) {
+  throw new Error("ToolExecutionComponent rendering did not restore after live toggle");
+}
+
+pi.events.emit("firstmate:calm-presentation", { active: true, stockExportRendering: true });
+const stockHtml = createToolHtmlRenderer({ getToolDefinition: () => stockDefinition, theme, cwd: process.cwd() });
+const actualHtml = createToolHtmlRenderer({ getToolDefinition: () => actualDefinition, theme, cwd: process.cwd() });
+const stockCall = stockHtml.renderCall("stock-html", "fm_branch_outcomes", args);
+const actualCall = actualHtml.renderCall("actual-html", "fm_branch_outcomes", args);
+const stockResult = stockHtml.renderResult("stock-html", "fm_branch_outcomes", result.content, result.details, false);
+const actualResult = actualHtml.renderResult("actual-html", "fm_branch_outcomes", result.content, result.details, false);
+if (actualCall !== undefined || actualResult !== undefined || stockCall !== undefined || stockResult !== undefined) {
+  throw new Error("stock export rendering did not delegate to Pi's structured fallback");
+}
+JS
+  )
+  status=$?
+  expect_code 0 "$status" "Pi outcomes rendering consumers must preserve stock behavior: $out"
+  [ -z "$out" ] || fail "Pi outcomes rendering consumer test printed output: $out"
+  pass "fm_branch_outcomes hides through ToolExecutionComponent while Calm-off and HTML export stay stock"
+}
+
+test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_branch_dispatch_two_stage_filter_and_prefix_contract
+test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot
 test_branch_cache_key_is_per_home_stable
-test_branch_gating_config_afk_and_fallback
+test_branch_project_grant_afk_and_fallback
+test_branch_predrain_recheck_defers_new_ungranted_project
+test_branch_predrain_recheck_excludes_new_main_owned_row_without_deferring_eligible_work
+test_settled_branch_prompt_releases_unacknowledged_grant
+test_main_owned_grant_result_falls_back_to_main
+test_branch_predrain_recheck_noops_already_drained_wake
 test_branch_mirror_filters_order_and_cursor
 test_branch_session_persists_across_process_restarts
 test_replacement_activation_cleans_leases_and_retries_failure

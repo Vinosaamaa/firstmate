@@ -58,16 +58,18 @@ This preference is local to each Firstmate home and is not part of secondmate in
 
 ## Pi supervision branch (config/pi-supervision-branch)
 
-On a Pi primary, ordinary actionable fleet wakes that pass the unchanged watcher classifier are handled by a persistent in-process supervision branch that keeps the captain's conversation clean; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns the architecture.
+On a Pi primary, a persistent in-process supervision branch can handle an explicitly granted project's eligible task-local wake rows while keeping main-only rows on the captain-facing path; [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility, per-actor claims, and the pre-drain recheck.
 The gitignored `config/pi-supervision-branch` file under the effective home is the captain's explicit, project-local autonomy grant.
 It contains one or more exact `project=<value>` lines, where each value exactly matches the `project=` field in task metadata; blank lines and `#` comments are allowed.
-A wake is delegated only when the exact queue-lock-bound batch is well formed, task-local, and resolves to one listed project.
-Fleet-wide, unresolvable, mixed-project, absent, unreadable, empty, legacy `on`, `off`, malformed queue rows, or otherwise malformed grants stay on the captain-facing main path and activate no branch-owned runtime state or lease cleanup.
-The grant enables only the Pi-primary routing and bounded supervision role in the captain-approved architecture: sharing a home does not extend authority to unlisted projects, the branch cannot merge a PR, land local work, or freshly spawn, and every existing captain gate remains unchanged.
-The file is read fresh at every wake offer, so an edit takes effect without restarting Pi.
+A wake is delegated only when its eligible row set is well formed, task-local, and resolves to one listed project.
+Fleet-wide, unresolvable, mixed-project, absent, unreadable, empty, legacy `on`, `off`, malformed queue rows, and otherwise malformed grants stay on the captain-facing main path and activate no branch-owned runtime state or lease cleanup.
+The file is read fresh at the initial offer and again before the branch row claim, so edits take effect without restarting Pi and a changed scope returns to main.
+Away mode still declines every wake offer, and a broken branch still falls back to today's wake-to-main path.
+The grant enables only the Pi-primary routing and bounded supervision role: sharing a home does not extend authority to unlisted projects, the branch cannot merge a PR, land local work, or freshly spawn, and every existing captain gate remains unchanged.
 Homes on any other primary harness never read this file and are entirely unaffected.
-Runtime state lives in `state/branch-outcomes.jsonl` with its `.branch-outcomes-cursor`, the persistent conversation under `state/branch-session/` with its `.branch-session` pointer and `.branch-mirror-cursor`, the transient queue ownership record `state/.branch-wake-reservation`, and per-task `state/.lease-<task>` files; `bin/fm-branch-outcome.sh`, `bin/fm-branch-wake-batch.sh`, and `bin/fm-lease-lib.sh` own those formats.
-This grant is local to each Firstmate home and is not part of secondmate inherited configuration; each home remains disabled until its captain explicitly writes at least one valid `project=<value>` line.
+Runtime state lives in `state/branch-outcomes.jsonl` with its `.branch-outcomes-cursor`, the persistent conversation under `state/branch-session/` with its `.branch-session` pointer and `.branch-mirror-cursor`, per-actor row claims in `state/.branch-eligible-rows`, `state/.branch-eligible-owner`, and `state/.main-eligible-rows`, and per-task `state/.lease-<task>` files; the owners are listed in `AGENTS.md`.
+A captain-facing (verdict `captain`) branch outcome opens exactly one follow-up turn on main - that turn is the captain-visible result, and Pi never separately prints or renders the merge note itself.
+Every meaningful routine outcome appends a rendered, sailboat-prefixed outcome note without branch-mechanics boilerplate.
 
 ## Backlog backend (.tasks.toml / config/backlog-backend)
 
