@@ -779,17 +779,25 @@ reject_copy_target_overlap() {
   if path_is_within_or_equal "$protected" "$target"; then
     die "target firstmate home cannot be equal to or inside protected path '$protected': $target"
   fi
-  if path_is_within_or_equal "$REC_ROOT" "$target"; then
-    die "target firstmate home cannot be equal to or inside protected workspace root '$REC_ROOT': $target"
-  fi
-  local idx=0
-  while [ "$idx" -lt "${#REC_MEMBER_PATHS[@]}" ]; do
-    protected=${REC_MEMBER_PATHS[$idx]}
+  local file idx=0
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    load_record "$file" || exit 1
+    protected=$REC_ROOT
     if path_is_within_or_equal "$protected" "$target"; then
-      die "target firstmate home cannot be equal to or inside protected member repository '$protected': $target"
+      die "target firstmate home cannot be equal to or inside protected workspace root '$protected': $target"
     fi
-    idx=$((idx + 1))
-  done
+    idx=0
+    while [ "$idx" -lt "${#REC_MEMBER_PATHS[@]}" ]; do
+      protected=${REC_MEMBER_PATHS[$idx]}
+      if path_is_within_or_equal "$protected" "$target"; then
+        die "target firstmate home cannot be equal to or inside protected member repository '$protected': $target"
+      fi
+      idx=$((idx + 1))
+    done
+  done <<EOF
+$(registry_files)
+EOF
 }
 
 reject_symlink_components() {
@@ -844,17 +852,25 @@ ensure_receipt_directory_for_write() {
 }
 
 command_copy_record() {
-  local id=${1:-} source_record=${2:-} receipt_token=${3:-} target receipt='' file idx other_idx
+  local id=${1:-} source_record=${2:-} receipt_token=${3:-} target receipt='' file idx other_idx registry_lock_held=0
   local candidate_root candidate_member_paths=()
   [ -n "$id" ] && [ -n "$source_record" ] || die "_copy-record requires a workspace id and source record"
-  [ "$#" -le 3 ] || die "_copy-record accepts a workspace id, source record, and optional receipt"
+  [ "$#" -le 4 ] || die "_copy-record accepts a workspace id, source record, optional receipt, and optional lock flag"
+  if [ "$#" -eq 4 ]; then
+    [ "$4" = --registry-lock-held ] || die "unknown _copy-record option: $4"
+    registry_lock_held=1
+  fi
   valid_id "$id" || die "invalid workspace id: $id"
   require_absolute "source workspace record" "$source_record"
   [ -f "$source_record" ] && [ ! -L "$source_record" ] \
     || die "source workspace record is missing or unsafe: $source_record"
   [ -z "$receipt_token" ] || receipt=$(receipt_path "$receipt_token")
 
-  acquire_registry_lock
+  if [ "$registry_lock_held" -eq 0 ]; then
+    acquire_registry_lock
+  else
+    [ -d "$LOCK" ] && [ ! -L "$LOCK" ] || die "external workspace registry lock is not held: $LOCK"
+  fi
   ensure_registry_for_write
   target=$(record_path "$id")
   if [ -e "$target" ] || [ -L "$target" ]; then
@@ -913,7 +929,7 @@ EOF
 }
 
 command_copy() {
-  local id=${1:-} target_home='' check_only=0 receipt_token='' arg source_record target_real result
+  local id=${1:-} target_home='' check_only=0 receipt_token='' target_lock_held=0 arg source_record target_real result
   [ -n "$id" ] || die "copy requires a workspace id"
   valid_id "$id" || die "invalid workspace id: $id"
   shift || true
@@ -938,6 +954,7 @@ command_copy() {
         [ -z "$receipt_token" ] || die "--receipt may be supplied only once"
         receipt_token=${arg#--receipt=}
         ;;
+      --target-registry-lock-held) target_lock_held=1 ;;
       *) die "unknown copy option: $arg" ;;
     esac
   done
@@ -963,10 +980,17 @@ command_copy() {
   [ -f "$target_real/AGENTS.md" ] && [ -d "$target_real/bin" ] \
     || die "target is not a firstmate home: $target_real"
   source_record=$(record_path "$id")
-  result=$(
-    unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
-    FM_HOME="$target_real" "$SCRIPT_DIR/fm-workspace.sh" _copy-record "$id" "$source_record" "$receipt_token"
-  ) || die "failed to copy workspace '$id' into $target_real"
+  if [ "$target_lock_held" -eq 1 ]; then
+    result=$(
+      unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+      FM_HOME="$target_real" "$SCRIPT_DIR/fm-workspace.sh" _copy-record "$id" "$source_record" "$receipt_token" --registry-lock-held
+    ) || die "failed to copy workspace '$id' into $target_real"
+  else
+    result=$(
+      unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+      FM_HOME="$target_real" "$SCRIPT_DIR/fm-workspace.sh" _copy-record "$id" "$source_record" "$receipt_token"
+    ) || die "failed to copy workspace '$id' into $target_real"
+  fi
   case "$result" in
     created) printf 'copied workspace %s to %s; external root and repositories were not touched\n' "$id" "$target_real" ;;
     existing) printf 'workspace %s already matches in %s\n' "$id" "$target_real" ;;
@@ -975,7 +999,7 @@ command_copy() {
 }
 
 command_release_copy() {
-  local id=${1:-} receipt_token='' rollback=0 arg target receipt dir result=released
+  local id=${1:-} receipt_token='' rollback=0 registry_lock_held=0 arg target receipt dir result=released
   [ -n "$id" ] || die "_release-copy requires a workspace id"
   valid_id "$id" || die "invalid workspace id: $id"
   shift || true
@@ -994,13 +1018,18 @@ command_release_copy() {
         receipt_token=${arg#--receipt=}
         ;;
       --rollback) rollback=1 ;;
+      --registry-lock-held) registry_lock_held=1 ;;
       *) die "unknown _release-copy option: $arg" ;;
     esac
   done
   [ -n "$receipt_token" ] || die "_release-copy requires --receipt"
   receipt=$(receipt_path "$receipt_token")
   dir=$(receipt_directory)
-  acquire_registry_lock
+  if [ "$registry_lock_held" -eq 0 ]; then
+    acquire_registry_lock
+  else
+    [ -d "$LOCK" ] && [ ! -L "$LOCK" ] || die "external workspace registry lock is not held: $LOCK"
+  fi
   if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
     if [ "$rollback" -eq 1 ]; then
       printf 'absent\n'

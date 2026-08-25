@@ -507,6 +507,8 @@ SEED_ROLLBACK_ACTIVE=0
 SEED_COMMITTED=0
 SEED_REGISTRY_LOCK=
 SEED_REGISTRY_LOCK_HELD=0
+SEED_WORKSPACE_REGISTRY_LOCK=
+SEED_WORKSPACE_REGISTRY_LOCK_HELD=0
 SEED_HOME_CLAIM=
 SEED_HOME_CLAIM_OWNER=
 SEED_HOME_CLAIM_HELD=0
@@ -515,6 +517,29 @@ seed_registry_lock_release() {
   if [ "$SEED_REGISTRY_LOCK_HELD" -eq 1 ]; then
     fm_lock_release "$SEED_REGISTRY_LOCK"
     SEED_REGISTRY_LOCK_HELD=0
+  fi
+}
+
+seed_workspace_registry_lock_acquire() {
+  local home=$1
+  [ -d "$home/data" ] && [ ! -L "$home/data" ] || {
+    echo "error: secondmate data directory is missing or unsafe: $home/data" >&2
+    return 1
+  }
+  SEED_WORKSPACE_REGISTRY_LOCK="$home/data/.workspaces.lock"
+  if ! mkdir -- "$SEED_WORKSPACE_REGISTRY_LOCK" 2>/dev/null; then
+    echo "error: external workspace registry is locked by another operation: $SEED_WORKSPACE_REGISTRY_LOCK" >&2
+    SEED_WORKSPACE_REGISTRY_LOCK=
+    return 1
+  fi
+  SEED_WORKSPACE_REGISTRY_LOCK_HELD=1
+}
+
+seed_workspace_registry_lock_release() {
+  if [ "$SEED_WORKSPACE_REGISTRY_LOCK_HELD" -eq 1 ]; then
+    rmdir -- "$SEED_WORKSPACE_REGISTRY_LOCK" 2>/dev/null || true
+    SEED_WORKSPACE_REGISTRY_LOCK_HELD=0
+    SEED_WORKSPACE_REGISTRY_LOCK=
   fi
 }
 
@@ -552,6 +577,7 @@ seed_home_claim_release() {
 
 seed_exit_cleanup() {
   seed_rollback
+  seed_workspace_registry_lock_release
   seed_home_claim_release || true
   seed_registry_lock_release
 }
@@ -696,7 +722,7 @@ seed_rollback() {
         (
           unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
           FM_HOME="$SEED_HOME" "$FM_ROOT/bin/fm-workspace.sh" _release-copy "$SEED_WORKSPACE_ID" \
-            --receipt "$SEED_WORKSPACE_RECEIPT" --rollback >/dev/null 2>&1
+            --receipt "$SEED_WORKSPACE_RECEIPT" --rollback --registry-lock-held >/dev/null 2>&1
         ) || true
       fi
       if [ -n "${SEED_BACKUP_DIR:-}" ] && [ "${SEED_HOME_BACKED_UP:-0}" = 1 ]; then
@@ -874,7 +900,7 @@ refuse_mismatched_workspace_charter() {  # <id> <brief> <workspace-id>
 
 seed_home() {
   local id=$1 requested_home=$2 requested_abs home projects_csv project project_dst charter_summary charter_scope workspace_copy_result
-  local no_projects=0 workspace_id='' arg
+  local no_projects=0 workspace_id='' workspace_option=0 arg
   local filtered=()
   shift 2
   # Exactly one source shape is required: managed projects, one external
@@ -886,13 +912,17 @@ seed_home() {
       --no-projects) no_projects=1 ;;
       --workspace)
         [ "$#" -gt 0 ] || { echo "error: --workspace requires a workspace id" >&2; return 1; }
-        [ -z "$workspace_id" ] || { echo "error: --workspace may be supplied only once" >&2; return 1; }
+        [ "$workspace_option" -eq 0 ] || { echo "error: --workspace may be supplied only once" >&2; return 1; }
+        workspace_option=1
         workspace_id=$1
         shift
+        [ -n "$workspace_id" ] || { echo "error: --workspace requires a non-empty value" >&2; return 1; }
         ;;
       --workspace=*)
-        [ -z "$workspace_id" ] || { echo "error: --workspace may be supplied only once" >&2; return 1; }
+        [ "$workspace_option" -eq 0 ] || { echo "error: --workspace may be supplied only once" >&2; return 1; }
+        workspace_option=1
         workspace_id=${arg#--workspace=}
+        [ -n "$workspace_id" ] || { echo "error: --workspace requires a non-empty value" >&2; return 1; }
         ;;
       --*) echo "error: unknown secondmate seed option: $arg" >&2; return 1 ;;
       *) filtered+=("$arg") ;;
@@ -905,8 +935,8 @@ seed_home() {
   fi
   if [ "$no_projects" -eq 1 ]; then
     [ $# -eq 0 ] || { echo "error: --no-projects cannot be combined with a project list" >&2; return 1; }
-    [ -z "$workspace_id" ] || { echo "error: --no-projects cannot be combined with --workspace" >&2; return 1; }
-  elif [ -n "$workspace_id" ]; then
+    [ "$workspace_option" -eq 0 ] || { echo "error: --no-projects cannot be combined with --workspace" >&2; return 1; }
+  elif [ "$workspace_option" -eq 1 ]; then
     [ $# -eq 0 ] || { echo "error: --workspace cannot be combined with a project list" >&2; return 1; }
     FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" show "$workspace_id" >/dev/null || return 1
   else
@@ -1038,9 +1068,10 @@ seed_home() {
   }
 
   if [ -n "$workspace_id" ]; then
+    seed_workspace_registry_lock_acquire "$home" || return 1
     SEED_WORKSPACE_RECEIPT="seed-$$-${RANDOM:-0}-${RANDOM:-0}"
     workspace_copy_result=$(FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" \
-      --to-home "$home" --receipt "$SEED_WORKSPACE_RECEIPT")
+      --to-home "$home" --receipt "$SEED_WORKSPACE_RECEIPT" --target-registry-lock-held)
     case "$workspace_copy_result" in
       "copied workspace $workspace_id to "*) ;;
       "workspace $workspace_id already matches in "*) SEED_WORKSPACE_RECEIPT= ;;
@@ -1084,16 +1115,20 @@ seed_home() {
   mv -f -- "$home/$SUB_HOME_MARKER.tmp.$$" "$home/$SUB_HOME_MARKER"
   write_registry "$id" "$home" "$projects_csv" "$SEED_PARENT_BRIEF"
   validate_registry
+  if [ -n "$workspace_id" ]; then
+    FM_HOME="$home" "$FM_ROOT/bin/fm-workspace.sh" show "$workspace_id" >/dev/null || return 1
+  fi
   if [ -n "$SEED_WORKSPACE_RECEIPT" ]; then
     (
       unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
       FM_HOME="$home" "$FM_ROOT/bin/fm-workspace.sh" _release-copy "$workspace_id" \
-        --receipt "$SEED_WORKSPACE_RECEIPT" >/dev/null
+        --receipt "$SEED_WORKSPACE_RECEIPT" --registry-lock-held >/dev/null
     ) || return 1
     SEED_WORKSPACE_RECEIPT=
   fi
-  seed_home_claim_release || return 1
   SEED_COMMITTED=1
+  seed_workspace_registry_lock_release
+  seed_home_claim_release || return 1
   seed_registry_lock_release
   trap - EXIT
   rm -rf -- "$SEED_BACKUP_DIR"
