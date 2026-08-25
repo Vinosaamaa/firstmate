@@ -83,6 +83,31 @@ test_workspace_source_shapes_are_exclusive() {
   pass "secondmate workspace: source modes are explicit and mutually exclusive"
 }
 
+test_empty_workspace_ids_fail_before_routing() {
+  local home out rc
+  home="$TMP_ROOT/empty-workspace-id-home"
+
+  set +e
+  out=$(FM_HOME="$PARENT" FM_SECONDMATE_CHARTER='empty workspace id fixture' \
+    "$ROOT/bin/fm-brief.sh" empty-brief --secondmate --workspace "" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "secondmate brief must reject an empty workspace id"
+  assert_contains "$out" "--workspace requires a non-empty value" "empty workspace brief refusal was not actionable"
+  assert_absent "$PARENT/data/empty-brief/brief.md" "empty workspace brief created a route artifact"
+
+  set +e
+  out=$(FM_HOME="$PARENT" FM_SECONDMATE_CHARTER='empty workspace id fixture' \
+    "$ROOT/bin/fm-home-seed.sh" empty-seed "$home" --workspace "" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "secondmate seed must reject an empty workspace id"
+  assert_contains "$out" "--workspace requires a non-empty value" "empty workspace seed refusal was not actionable"
+  assert_absent "$home" "empty workspace seed created a target home"
+  assert_absent "$PARENT/data/empty-seed/brief.md" "empty workspace seed created a route artifact"
+  pass "secondmate workspace: empty workspace ids fail before routing"
+}
+
 test_workspace_seed_refuses_protected_target_before_clone() {
   local target out rc
   target="$OUTER/unsafe-secondmate-home"
@@ -141,6 +166,7 @@ test_workspace_seed_refuses_claimed_target() {
 setup_world
 test_workspace_charter_and_seed
 test_workspace_source_shapes_are_exclusive
+test_empty_workspace_ids_fail_before_routing
 test_workspace_seed_refuses_protected_target_before_clone
 test_workspace_seed_refuses_symlinked_new_target_before_clone
 test_workspace_seed_refuses_claimed_target
