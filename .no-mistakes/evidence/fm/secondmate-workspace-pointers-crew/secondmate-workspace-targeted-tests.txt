@@ -1,0 +1,23 @@
+Targeted test evidence for target commit 36534258545a4bf197cbd7720a63b60a574bf18e
+
+Commands run directly in the foreground:
+
+  bash tests/fm-brief.test.sh
+  bash tests/fm-workspace.test.sh
+  bash tests/fm-secondmate-workspace.test.sh
+
+Relevant end-user behavior observed in command output:
+
+  ok - fm-brief: scout and secondmate code paths still scaffold well-formed briefs
+  ok - fm-workspace: copies validated pointers between homes without cloning or mutating repositories
+  ok - fm-workspace: conflicting and unsafe pointer targets fail closed
+  ok - fm-workspace: rollback receipts remove only their owned pointer inode
+  ok - fm-workspace: receipt commit requires the propagated pointer
+  ok - secondmate workspace: persistent home receives the pointer and no duplicate clones
+  ok - secondmate workspace: source modes are explicit and mutually exclusive
+  ok - secondmate workspace: empty workspace ids fail before routing
+  ok - secondmate workspace: protected targets fail before home creation
+  ok - secondmate workspace: symlink-bearing new targets fail before home creation
+  ok - secondmate workspace: target claims serialize concurrent seeds
+  All fm-workspace tests passed.
+  All secondmate workspace tests passed.
