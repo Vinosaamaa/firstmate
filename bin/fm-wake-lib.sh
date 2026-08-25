@@ -173,13 +173,10 @@ fm_supervision_model() {
 # "a live Pi session owns supervision" is provable from durable state without a
 # watcher process and without reading any vendor-rendered surface.
 #
-# fm_pi_extension_version <file>
-# Print the marker version string the Pi extensions record for <file>. Must stay
-# byte-identical to the "sha256:<hex>" digest .pi/extensions/fm-primary-pi-watch.ts
-# and .pi/extensions/fm-primary-turnend-guard.ts compute for themselves; a host
-# with no SHA-256 tool falls back to a form no marker can match, which keeps every
-# consumer loud rather than silently satisfied.
-fm_pi_extension_version() {
+# fm_file_digest <file>
+# Print the shared portable content digest used by queue-batch bindings and Pi
+# extension markers.
+fm_file_digest() {
   local file=$1
   [ -f "$file" ] || return 1
   if command -v shasum >/dev/null 2>&1; then
@@ -189,6 +186,10 @@ fm_pi_extension_version() {
   else
     cksum "$file" | awk '{print "cksum:" $1 ":" $2}'
   fi
+}
+
+fm_pi_extension_version() {
+  fm_file_digest "$1"
 }
 
 # fm_pi_extension_loaded <marker> <expected-version> <session-lock>
@@ -1220,8 +1221,8 @@ fm_wake_secondmate_stall_receipt_write() { # <task> <row-key>
   fi
 }
 
-fm_wake_commit_secondmate_stall_receipts_through() { # <cutoff>
-  local cutoff=$1 key seq rest epoch task row_key
+fm_wake_commit_secondmate_stall_receipts_through() { # <cutoff> [<exclusive-lower-bound>]
+  local cutoff=$1 lower=${2:-0} key seq rest epoch task row_key
   while IFS= read -r key; do
     seq=${key##*-}
     rest=${key%-*}
@@ -1233,8 +1234,8 @@ fm_wake_commit_secondmate_stall_receipts_through() { # <cutoff>
     case "$task" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
     row_key="$epoch-$seq"
     fm_wake_secondmate_stall_receipt_write "$task" "$row_key" || return 1
-  done < <(awk -F '\t' -v cutoff="$cutoff" '
-    NF >= 5 && $2 ~ /^[0-9]+$/ && $2 <= cutoff && $3 == "check" \
+  done < <(awk -F '\t' -v cutoff="$cutoff" -v lower="$lower" '
+    NF >= 5 && $2 ~ /^[0-9]+$/ && $2 > lower && $2 <= cutoff && $3 == "check" \
       && $4 ~ /^secondmate-wake-loop-[A-Za-z0-9._-]+-[0-9]+-[0-9]+$/ { print $4 }
   ' "$FM_WAKE_QUEUE" 2>/dev/null)
 }

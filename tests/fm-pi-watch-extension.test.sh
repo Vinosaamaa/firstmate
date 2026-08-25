@@ -36,8 +36,8 @@ install_pi_watch_extension_fixture() {
   cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$repo/.pi/extensions/lib/fm-calm-visibility.ts"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
   mkdir -p "$repo/bin"
-  cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
-  chmod +x "$repo/bin/fm-operational-input.sh"
+  cp "$ROOT/bin/fm-operational-input.sh" "$ROOT/bin/fm-branch-wake-batch.sh" "$ROOT/bin/fm-wake-lib.sh" "$repo/bin/"
+  chmod +x "$repo/bin/fm-operational-input.sh" "$repo/bin/fm-branch-wake-batch.sh"
   cat > "$repo/node_modules/@earendil-works/pi-coding-agent/package.json" <<'JSON'
 {"name":"@earendil-works/pi-coding-agent","type":"module","exports":"./index.js"}
 JSON
@@ -423,7 +423,7 @@ EOF
   pass "Pi actionable close starts one successor before wake delivery settles"
 }
 
-test_pi_branch_offer_owns_actionable_wake() {
+test_pi_branch_offer_owns_bound_actionable_wake() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-branch-offer-root"
   home="$TMP_ROOT/pi-branch-offer-home"
@@ -450,8 +450,9 @@ trap 'exit 0' TERM INT
 while [ ! -e "$FM_STOP_FILE" ]; do sleep 0.02; done
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
-  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
-import { readFileSync, writeFileSync } from "node:fs";
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_REAL_ROOT="$ROOT" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node --input-type=module 2>&1 <<'EOF'
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 // Two independent runs against the SAME dispatcher build: with an accepting
@@ -475,7 +476,11 @@ async function runScenario(withAcceptor) {
   };
   if (withAcceptor) {
     bus.on("fm-branch-supervision:dispatch", (offer) => {
-      offers.push({ message: offer.message, projects: offer.projects });
+      offers.push({ message: offer.message, projects: offer.projects, batch: offer.batch });
+      appendFileSync(
+        `${process.env.FM_HOME}/state/.wake-queue`,
+        "1\t2\tsignal\tlate-other.status\tsignal: late ungranted wake\n",
+      );
       offer.accept();
     });
   }
@@ -502,8 +507,10 @@ async function runScenario(withAcceptor) {
   return { offers, mainPrompt, rows };
 }
 
-writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const lockOwnerPid = String(process.ppid);
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${lockOwnerPid}\n`);
 writeFileSync(`${process.env.FM_HOME}/state/branch-offer.meta`, "project=/projects/approved\nwindow=fm-branch-offer\n");
+writeFileSync(`${process.env.FM_HOME}/state/late-other.meta`, "project=/projects/other\nwindow=fm-late-other\n");
 writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t1\tsignal\tbranch-offer.status\tsignal: branch-offer synthetic wake\n");
 const accepted = await runScenario(true);
 if (accepted.offers.length !== 1) throw new Error(`expected one branch offer, got ${accepted.offers.length}`);
@@ -513,9 +520,77 @@ if (!accepted.offers[0].message.includes("signal: branch-offer synthetic wake"))
 if (JSON.stringify(accepted.offers[0].projects) !== JSON.stringify(["/projects/approved"])) {
   throw new Error(`offer did not carry the queued task project: ${JSON.stringify(accepted.offers[0].projects)}`);
 }
+if (accepted.offers[0].batch.through !== 1 || !/^(?:sha256:|cksum:)/.test(accepted.offers[0].batch.digest)) {
+  throw new Error(`offer did not bind the first queue batch: ${JSON.stringify(accepted.offers[0].batch)}`);
+}
 if (accepted.mainPrompt !== "") throw new Error(`accepted offer still reached main: ${accepted.mainPrompt}`);
 if (!accepted.rows.some((row) => row.startsWith("confirmed generation=fixture-generation"))) {
   throw new Error(`handling delivery was not confirmed before the branch handoff: ${accepted.rows.join(" | ")}`);
+}
+const drain = spawnSync(
+  "bash",
+  [
+    `${process.env.FM_REAL_ROOT}/bin/fm-wake-drain.sh`,
+    "--branch-batch",
+    String(accepted.offers[0].batch.through),
+    accepted.offers[0].batch.digest,
+  ],
+  {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      FM_HOME: process.env.FM_HOME,
+      FM_STATE_OVERRIDE: `${process.env.FM_HOME}/state`,
+      FM_ROOT_OVERRIDE: process.env.FM_REAL_ROOT,
+      FM_BRANCH_OWNER_PID: lockOwnerPid,
+    },
+  },
+);
+if (drain.status !== 0) throw new Error(`bound branch drain failed: ${drain.stderr}`);
+if (!drain.stdout.includes("branch-offer synthetic wake")) throw new Error(`bound drain lost its accepted row: ${drain.stdout}`);
+if (drain.stdout.includes("late ungranted wake")) throw new Error(`bound drain absorbed a later project row: ${drain.stdout}`);
+const mainDrain = spawnSync("bash", [`${process.env.FM_REAL_ROOT}/bin/fm-wake-drain.sh`], {
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    FM_HOME: process.env.FM_HOME,
+    FM_STATE_OVERRIDE: `${process.env.FM_HOME}/state`,
+    FM_ROOT_OVERRIDE: process.env.FM_REAL_ROOT,
+  },
+});
+if (mainDrain.status !== 0) throw new Error(`main drain beside a reservation failed: ${mainDrain.stderr}`);
+if (!mainDrain.stdout.includes("late ungranted wake")) throw new Error(`main drain lost the later row: ${mainDrain.stdout}`);
+if (mainDrain.stdout.includes("branch-offer synthetic wake")) throw new Error(`main drain entered the reserved batch: ${mainDrain.stdout}`);
+const ackMatch = drain.stderr.match(/--ack-through\s+(\d+)\s+--recovery-generation\s+([A-Za-z0-9._-]+)/);
+if (!ackMatch) throw new Error(`bound branch drain omitted its acknowledgement: ${drain.stderr}`);
+const branchAck = spawnSync(
+  "bash",
+  [
+    `${process.env.FM_REAL_ROOT}/bin/fm-wake-drain.sh`,
+    "--ack-through",
+    ackMatch[1],
+    "--recovery-generation",
+    ackMatch[2],
+  ],
+  {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      FM_HOME: process.env.FM_HOME,
+      FM_STATE_OVERRIDE: `${process.env.FM_HOME}/state`,
+      FM_ROOT_OVERRIDE: process.env.FM_REAL_ROOT,
+      FM_SUPERVISION_ACTOR: "branch",
+      FM_BRANCH_OWNER_PID: lockOwnerPid,
+    },
+  },
+);
+if (branchAck.status !== 0) throw new Error(`bound branch acknowledgement failed: ${branchAck.stderr}`);
+if (existsSync(`${process.env.FM_HOME}/state/.branch-wake-reservation`)) {
+  throw new Error("bound branch acknowledgement retained its reservation");
+}
+const remainingQueue = readFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "utf8");
+if (remainingQueue.includes("branch-offer synthetic wake") || !remainingQueue.includes("late ungranted wake")) {
+  throw new Error(`branch acknowledgement consumed the wrong rows: ${remainingQueue}`);
 }
 const declined = await runScenario(false);
 if (declined.offers.length !== 0) throw new Error("no-acceptor scenario recorded an offer");
@@ -525,14 +600,32 @@ if (!declined.mainPrompt.includes("FIRSTMATE WATCHER WAKE")) {
 if (!declined.mainPrompt.includes("signal: branch-offer synthetic wake")) {
   throw new Error(`fallback wake lost the reason line: ${declined.mainPrompt}`);
 }
+
+const batchScript = `${process.env.FM_ROOT_OVERRIDE}/bin/fm-branch-wake-batch.sh`;
+const release = spawnSync("bash", [batchScript, "release"], { encoding: "utf8", env: process.env });
+if (release.status !== 0) throw new Error(`could not release the accepted fixture batch: ${release.stderr}`);
+for (const malformed of [
+  "1\t3\tsignal\tbranch-offer.status\n",
+  "1\tnot-a-sequence\tsignal\tbranch-offer.status\tsignal: malformed\n",
+]) {
+  writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, malformed);
+  const scope = spawnSync("bash", [batchScript], { encoding: "utf8", env: process.env });
+  if (scope.status === 0) throw new Error(`malformed queue produced a branch batch: ${scope.stdout}`);
+}
+writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "1\t4\tsignal\tbranch-offer.status\n");
+const malformedFallback = await runScenario(true);
+if (malformedFallback.offers.length !== 0) throw new Error("malformed queue reached the branch acceptor");
+if (!malformedFallback.mainPrompt.includes("FIRSTMATE WATCHER WAKE")) {
+  throw new Error(`malformed queue did not fail back to main: ${malformedFallback.mainPrompt}`);
+}
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 process.exit(0);
 EOF
   )
   status=$?
-  expect_code 0 "$status" "Pi dispatcher must hand an accepted wake to the branch and fall back to main otherwise"
+  expect_code 0 "$status" "Pi dispatcher must bind one valid queue batch and fail unsafe queues back to main"
   [ -z "$out" ] || fail "Pi branch-offer test printed output: $out"
-  pass "Pi dispatcher branch offer owns accepted wakes and falls back to main"
+  pass "Pi dispatcher binds one immutable project batch and rejects malformed or later rows"
 }
 
 test_pi_handling_delivery_failure_is_typed_once() {
@@ -2388,7 +2481,7 @@ test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery
-test_pi_branch_offer_owns_actionable_wake
+test_pi_branch_offer_owns_bound_actionable_wake
 test_pi_handling_delivery_failure_is_typed_once
 test_pi_hung_successor_falls_back_to_typed_wake
 test_pi_unretired_successor_falls_back_without_retry

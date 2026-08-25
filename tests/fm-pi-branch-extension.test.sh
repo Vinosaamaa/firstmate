@@ -214,10 +214,11 @@ const pi = {
 function fire(event, payload, ctx) {
   for (const handler of piHandlers.get(event) ?? []) handler(payload, ctx);
 }
-function makeOffer(message, projects = [approvedProject]) {
+function makeOffer(message, projects = [approvedProject], batch = { through: 1, digest: `sha256:${"0".repeat(64)}` }) {
   const offer = {
     message,
     projects,
+    batch,
     accepted: false,
     accept() {
       offer.accepted = true;
@@ -225,8 +226,8 @@ function makeOffer(message, projects = [approvedProject]) {
   };
   return offer;
 }
-function dispatch(message, projects) {
-  const offer = makeOffer(message, projects);
+function dispatch(message, projects, batch) {
+  const offer = makeOffer(message, projects, batch);
   bus.emit("fm-branch-supervision:dispatch", offer);
   return offer;
 }
@@ -451,11 +452,19 @@ if (dispatch("heartbeat", []).accepted) {
 if (dispatch("signal: other project", [`${home}/projects/other`]).accepted) {
   throw new Error("branch accepted an out-of-scope project wake");
 }
+writeFileSync(
+  `${home}/config/pi-supervision-branch`,
+  `project=${home}/projects/approved\nproject=${home}/projects/other\n`,
+);
 if (dispatch("signal: mixed projects", [`${home}/projects/approved`, `${home}/projects/other`]).accepted) {
   throw new Error("branch accepted a mixed-project wake");
 }
+writeFileSync(`${home}/config/pi-supervision-branch`, `project=${home}/projects/approved\n`);
 if (!dispatch("signal: gates cleared").accepted) throw new Error("branch refused a wake with gates cleared");
 await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "branch wake prompt");
+if (!(globalThis.__fmPrompts[0] ?? "").includes("bin/fm-wake-drain.sh --branch-batch 1 sha256:")) {
+  throw new Error(`branch prompt omitted its bound drain command: ${globalThis.__fmPrompts[0]}`);
+}
 process.exit(0);
 EOF
   status=$?
@@ -888,6 +897,7 @@ for (const handler of replacementPiHandlers.get("turn_end") ?? []) handler({}, c
 const offer = {
   message: "signal: after rebind",
   projects: [`${home}/projects/approved`],
+  batch: { through: 1, digest: `sha256:${"0".repeat(64)}` },
   accepted: false,
   accept() {
     offer.accepted = true;

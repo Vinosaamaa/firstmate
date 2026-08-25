@@ -14,6 +14,13 @@
 
 export const FM_BRANCH_DISPATCH_EVENT = "fm-branch-supervision:dispatch";
 
+export interface BranchWakeBatch {
+  /** Highest durable queue sequence included in this immutable batch. */
+  through: number;
+  /** Digest of the exact normalized queue rows through that sequence. */
+  digest: string;
+}
+
 export interface BranchDispatchOffer {
   /** The watcher's actionable close message (the wake reason line(s)). */
   message: string;
@@ -22,18 +29,26 @@ export interface BranchDispatchOffer {
    * Empty means the wake is fleet-wide or could not be scoped safely.
    */
   projects: readonly string[];
+  /** Queue-lock-bound batch the branch must present instead of a later queue. */
+  batch: Readonly<BranchWakeBatch>;
   /** Set by accept(); read by the watcher after emit returns. */
   accepted: boolean;
   accept(): void;
 }
 
-export function createBranchDispatchOffer(message: string, projects: readonly string[] = []): BranchDispatchOffer {
+export function createBranchDispatchOffer(
+  message: string,
+  projects: readonly string[] = [],
+  batch: BranchWakeBatch = { through: 0, digest: "" },
+  claim: () => boolean = () => true,
+): BranchDispatchOffer {
   const offer: BranchDispatchOffer = {
     message,
-    projects: [...projects],
+    projects: Object.freeze([...projects]),
+    batch: Object.freeze({ ...batch }),
     accepted: false,
     accept() {
-      offer.accepted = true;
+      if (claim()) offer.accepted = true;
     },
   };
   return offer;

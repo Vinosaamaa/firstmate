@@ -29,6 +29,14 @@ ACK_THROUGH=
 ACK_GENERATION=
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
+BRANCH_THROUGH=
+BRANCH_DIGEST=
+DRAIN_SOURCE="$FM_WAKE_QUEUE"
+BRANCH_RESERVATION="$STATE/.branch-wake-reservation"
+RESERVED_THROUGH=
+RESERVED_DIGEST=
+RESERVED_OWNER=
+BRANCH_REQUEST_OWNER=${FM_BRANCH_OWNER_PID:-}
 
 case "${1:-}" in
   '') ;;
@@ -41,7 +49,18 @@ case "${1:-}" in
     case "$ACK_GENERATION" in ''|*[!A-Za-z0-9._-]*) echo "wake drain: invalid recovery generation" >&2; exit 2 ;; esac
     [ "$#" -eq 4 ] || { echo "wake drain: unexpected acknowledgement arguments" >&2; exit 2; }
     ;;
-  *) echo "usage: fm-wake-drain.sh [--ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
+  --branch-batch)
+    BRANCH_THROUGH=${2:-}
+    case "$BRANCH_THROUGH" in ''|0|*[!0-9]*) echo "wake drain: invalid branch batch sequence" >&2; exit 2 ;; esac
+    BRANCH_DIGEST=${3:-}
+    case "$BRANCH_DIGEST" in
+      sha256:*|cksum:*:*) ;;
+      *) echo "wake drain: invalid branch batch digest" >&2; exit 2 ;;
+    esac
+    case "$BRANCH_DIGEST" in *[!A-Za-z0-9:._-]*) echo "wake drain: invalid branch batch digest" >&2; exit 2 ;; esac
+    [ "$#" -eq 3 ] || { echo "wake drain: unexpected branch batch arguments" >&2; exit 2; }
+    ;;
+  *) echo "usage: fm-wake-drain.sh [--branch-batch SEQUENCE DIGEST | --ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
 esac
 
 # Defense in depth for the supervision chain: this script runs at the top of
@@ -59,16 +78,38 @@ assert_watcher_liveness() {
   "$SCRIPT_DIR/fm-guard.sh" || true
 }
 
+load_branch_reservation() {
+  local extra='' lock_owner
+  RESERVED_THROUGH=
+  RESERVED_DIGEST=
+  RESERVED_OWNER=
+  [ -e "$BRANCH_RESERVATION" ] || [ -L "$BRANCH_RESERVATION" ] || return 0
+  [ -f "$BRANCH_RESERVATION" ] && [ ! -L "$BRANCH_RESERVATION" ] || return 1
+  IFS=$(printf '\t') read -r RESERVED_THROUGH RESERVED_DIGEST RESERVED_OWNER extra < "$BRANCH_RESERVATION" || return 1
+  case "$RESERVED_THROUGH" in ''|0|*[!0-9]*) return 1 ;; esac
+  case "$RESERVED_DIGEST" in sha256:*|cksum:*:*) ;; *) return 1 ;; esac
+  case "$RESERVED_OWNER" in ''|*[!0-9]*) return 1 ;; esac
+  [ -z "$extra" ] || return 1
+  lock_owner=$(sed -n '1p' "$STATE/.lock" 2>/dev/null || true)
+  case "$lock_owner" in ''|1|*[!0-9]*) return 0 ;; esac
+  [ "$lock_owner" = "$RESERVED_OWNER" ] && return 0
+  rm -f -- "$BRANCH_RESERVATION" || return 1
+  RESERVED_THROUGH=
+  RESERVED_DIGEST=
+  RESERVED_OWNER=
+}
+
 # Mark presentation-stage inactive terminal outcomes only after the handling
 # turn has completed and before this acknowledgement consumes its queue rows.
 # The helper ignores non-presentation and legacy keys, so this is a narrow
 # receipt path rather than a second interpretation of general check wakes.
-inactive_outcome_fingerprints() { # <sequence> <key-prefix>
-  local cutoff=$1 prefix=$2 epoch seq kind key payload
+inactive_outcome_fingerprints() { # <sequence> <key-prefix> [<exclusive-lower-bound>]
+  local cutoff=$1 prefix=$2 lower=${3:-0} epoch seq kind key payload
   while IFS=$(printf '\t') read -r epoch seq kind key payload; do
     [ "$kind" = check ] || continue
     case "$seq" in ''|*[!0-9]*) continue ;; esac
     [ "$seq" -le "$cutoff" ] || continue
+    [ "$seq" -gt "$lower" ] || continue
     case "$key" in
       "$prefix"*) printf '%s\n' "${key#"$prefix"}" ;;
     esac
@@ -280,10 +321,25 @@ trap 'exit 143' TERM
 
 fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=true
+load_branch_reservation || { echo "wake drain: invalid branch wake reservation" >&2; exit 1; }
 
 if [ -n "$ACK_THROUGH" ]; then
-  ACK_FINGERPRINTS=$(inactive_outcome_fingerprints "$ACK_THROUGH" 'inactive-outcome:') || exit 1
-  ACK_NOTICE_FINGERPRINTS=$(inactive_outcome_fingerprints "$ACK_THROUGH" 'inactive-reconcile:') || exit 1
+  BRANCH_ACK=false
+  ACK_LOWER_BOUND=0
+  if [ "${FM_SUPERVISION_ACTOR:-main}" = branch ]; then
+    [ -n "$RESERVED_THROUGH" ] && [ "$ACK_THROUGH" = "$RESERVED_THROUGH" ] \
+      && [ -n "$BRANCH_REQUEST_OWNER" ] && [ "$RESERVED_OWNER" = "$BRANCH_REQUEST_OWNER" ] || {
+      echo "wake drain: branch acknowledgement does not match its reserved batch" >&2
+      exit 1
+    }
+    BRANCH_ACK=true
+    EXPECTED_BRANCH_DIGEST=$RESERVED_DIGEST
+    EXPECTED_BRANCH_OWNER=$RESERVED_OWNER
+  elif [ -n "$RESERVED_THROUGH" ]; then
+    ACK_LOWER_BOUND=$RESERVED_THROUGH
+  fi
+  ACK_FINGERPRINTS=$(inactive_outcome_fingerprints "$ACK_THROUGH" 'inactive-outcome:' "$ACK_LOWER_BOUND") || exit 1
+  ACK_NOTICE_FINGERPRINTS=$(inactive_outcome_fingerprints "$ACK_THROUGH" 'inactive-reconcile:' "$ACK_LOWER_BOUND") || exit 1
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   if ! acknowledge_inactive_outcomes acknowledge "$ACK_FINGERPRINTS" \
@@ -293,12 +349,22 @@ if [ -n "$ACK_THROUGH" ]; then
   fi
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=true
+  load_branch_reservation || { echo "wake drain: invalid branch wake reservation" >&2; exit 1; }
+  if [ "$BRANCH_ACK" = true ]; then
+    [ "$ACK_THROUGH" = "$RESERVED_THROUGH" ] \
+      && [ "$EXPECTED_BRANCH_DIGEST" = "$RESERVED_DIGEST" ] \
+      && [ "$EXPECTED_BRANCH_OWNER" = "$RESERVED_OWNER" ] || {
+      echo "wake drain: branch wake reservation changed before acknowledgement" >&2
+      exit 1
+    }
+  fi
   DRAIN_TMP=$(mktemp "$STATE/.wake-queue.ack.XXXXXX") || exit 1
   chmod 0600 "$DRAIN_TMP" || exit 1
-  awk -F '\t' -v cutoff="$ACK_THROUGH" '
-    NF < 5 || $2 !~ /^[0-9]+$/ || $2 > cutoff { print }
+  awk -F '\t' -v cutoff="$ACK_THROUGH" -v reserved="$RESERVED_THROUGH" -v branch_ack="$BRANCH_ACK" '
+    NF < 5 || $2 !~ /^[0-9]+$/ || $2 > cutoff ||
+      (reserved != "" && branch_ack != "true" && $2 <= reserved) { print }
   ' "$FM_WAKE_QUEUE" > "$DRAIN_TMP" || exit 1
-  fm_wake_commit_secondmate_stall_receipts_through "$ACK_THROUGH" || {
+  fm_wake_commit_secondmate_stall_receipts_through "$ACK_THROUGH" "$ACK_LOWER_BOUND" || {
     echo "wake drain: secondmate stall receipt could not be recorded safely" >&2
     exit 1
   }
@@ -325,6 +391,12 @@ if [ -n "$ACK_THROUGH" ]; then
     exit 1
   fi
   DRAIN_TMP=
+  if [ "$BRANCH_ACK" = true ]; then
+    rm -f -- "$BRANCH_RESERVATION" || {
+      echo "wake drain: acknowledged branch batch but could not retire its reservation" >&2
+      exit 1
+    }
+  fi
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   if [ "$RECOVERY_ACK_MOVED" = true ]; then
@@ -334,8 +406,38 @@ if [ -n "$ACK_THROUGH" ]; then
   exit 0
 fi
 
-if [ ! -s "$FM_WAKE_QUEUE" ]; then
-  : > "$FM_WAKE_QUEUE"
+if [ -n "$BRANCH_THROUGH" ]; then
+  [ "$BRANCH_THROUGH" = "$RESERVED_THROUGH" ] && [ "$BRANCH_DIGEST" = "$RESERVED_DIGEST" ] \
+    && [ -n "$BRANCH_REQUEST_OWNER" ] && [ "$RESERVED_OWNER" = "$BRANCH_REQUEST_OWNER" ] || {
+    echo "wake drain: branch batch is not the reserved queue batch" >&2
+    exit 1
+  }
+  DRAIN_TMP=$(mktemp "$STATE/.wake-queue.branch.XXXXXX") || exit 1
+  chmod 0600 "$DRAIN_TMP" || exit 1
+  awk -F '\t' -v cutoff="$BRANCH_THROUGH" '
+    NF >= 5 && $2 ~ /^[0-9]+$/ && $2 <= cutoff { print }
+  ' "$FM_WAKE_QUEUE" > "$DRAIN_TMP" || exit 1
+  [ -s "$DRAIN_TMP" ] || { echo "wake drain: branch batch is no longer available" >&2; exit 1; }
+  actual_digest=$(fm_file_digest "$DRAIN_TMP") || {
+    echo "wake drain: branch batch digest could not be computed" >&2
+    exit 1
+  }
+  [ "$actual_digest" = "$BRANCH_DIGEST" ] || {
+    echo "wake drain: branch batch changed before presentation" >&2
+    exit 1
+  }
+  DRAIN_SOURCE=$DRAIN_TMP
+elif [ -n "$RESERVED_THROUGH" ]; then
+  DRAIN_TMP=$(mktemp "$STATE/.wake-queue.main.XXXXXX") || exit 1
+  chmod 0600 "$DRAIN_TMP" || exit 1
+  awk -F '\t' -v reserved="$RESERVED_THROUGH" '
+    NF < 5 || $2 !~ /^[0-9]+$/ || $2 > reserved { print }
+  ' "$FM_WAKE_QUEUE" > "$DRAIN_TMP" || exit 1
+  DRAIN_SOURCE=$DRAIN_TMP
+fi
+
+if [ ! -s "$DRAIN_SOURCE" ]; then
+  [ -e "$FM_WAKE_QUEUE" ] || : > "$FM_WAKE_QUEUE"
   fm_recovery_marker_snapshot "$RECOVERY_MARKER" || true
   RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
   case "$RECOVERY_MARKER_TOKEN" in
@@ -382,8 +484,8 @@ fm_recovery_marker_begin_handling "$RECOVERY_MARKER" || {
 }
 RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
 
-RAW_ROWS=$(fm_wake_print_deduped "$FM_WAKE_QUEUE") || exit "$?"
-ACK_THROUGH=$(awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > max { max=$2 } END { print max + 0 }' "$FM_WAKE_QUEUE") || exit 1
+RAW_ROWS=$(fm_wake_print_deduped "$DRAIN_SOURCE") || exit "$?"
+ACK_THROUGH=$(awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > max { max=$2 } END { print max + 0 }' "$DRAIN_SOURCE") || exit 1
 case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   0) ;;
   ''|*[!0-9]*) ;;

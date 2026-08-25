@@ -59,6 +59,7 @@ import { Type } from "typebox";
 import {
   FM_BRANCH_DISPATCH_EVENT,
   type BranchDispatchOffer,
+  type BranchWakeBatch,
 } from "./lib/fm-branch-dispatch.ts";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
 
@@ -77,6 +78,7 @@ const mirrorCursorFile = join(state, ".branch-mirror-cursor");
 const promptScript = join(fmRoot, "bin", "fm-branch-prompt.sh");
 const outcomeScript = join(fmRoot, "bin", "fm-branch-outcome.sh");
 const leaseScript = join(fmRoot, "bin", "fm-lease.sh");
+const branchBatchScript = join(fmRoot, "bin", "fm-branch-wake-batch.sh");
 const loadedMarker = join(state, ".pi-branch-extension-loaded");
 
 // Same tool set in the same order on every request (part of the cached
@@ -126,9 +128,11 @@ function branchConfigured(): boolean {
 }
 
 function offerIsGranted(offer: BranchDispatchOffer): boolean {
-  if (!Array.isArray(offer.projects) || offer.projects.length === 0) return false;
+  if (!Array.isArray(offer.projects) || offer.projects.length !== 1) return false;
+  if (!offer.batch || !Number.isSafeInteger(offer.batch.through) || offer.batch.through <= 0) return false;
+  if (!/^(?:sha256:[0-9a-f]{64}|cksum:[0-9]+:[0-9]+)$/.test(offer.batch.digest)) return false;
   const grants = grantedProjects();
-  return grants.size > 0 && offer.projects.every((project) => grants.has(project));
+  return grants.has(offer.projects[0]);
 }
 
 function afkActive(): boolean {
@@ -513,6 +517,7 @@ ${context.command}
             ...scriptEnv,
             FM_SUPERVISION_ACTOR: "branch",
             FM_LEASE_HOLDER_PID: leaseHolderPid,
+            FM_BRANCH_OWNER_PID: ownedLockPid,
           },
         };
       },
@@ -592,7 +597,26 @@ ${context.command}
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
   }
 
-  function enqueueWake(message: string, acceptedGeneration: number): void {
+  function releaseBatch(batch?: BranchWakeBatch): void {
+    const args = batch
+      ? [branchBatchScript, "release", String(batch.through), batch.digest]
+      : [branchBatchScript, "release"];
+    spawnSync("bash", args, {
+      cwd: fmRoot,
+      encoding: "utf8",
+      env: { ...scriptEnv, FM_BRANCH_OWNER_PID: ownedLockPid },
+    });
+  }
+
+  function recoverBatch(): void {
+    spawnSync("bash", [branchBatchScript, "recover"], {
+      cwd: fmRoot,
+      encoding: "utf8",
+      env: { ...scriptEnv, FM_BRANCH_OWNER_PID: ownedLockPid },
+    });
+  }
+
+  function enqueueWake(message: string, batch: BranchWakeBatch, acceptedGeneration: number): void {
     branchChain = branchChain
       .then(async () => {
         if (shuttingDown || acceptedGeneration !== generation) {
@@ -603,13 +627,14 @@ ${context.command}
         await flushMirror(session, acceptedGeneration);
         if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");
         await session.prompt(
-          `FIRSTMATE SUPERVISION WAKE: ${message}\n\nHandle this per your operating procedure and finish with fm_branch_report.`,
+          `FIRSTMATE SUPERVISION WAKE: ${message}\n\nDrain the authorized batch first with bin/fm-wake-drain.sh --branch-batch ${batch.through} ${batch.digest}. Then handle it per your operating procedure and finish with fm_branch_report.`,
         );
       })
       .catch(async (error: unknown) => {
         // Return the wake to main rather than losing it; the durable wake
         // queue additionally re-presents anything never acknowledged.
         try {
+          releaseBatch(batch);
           await fallbackToMain(message, error instanceof Error ? error.message : String(error));
         } catch {}
       });
@@ -640,8 +665,10 @@ ${context.command}
     if (!actingAsOwner()) return; // cold start pre-lock, secondary session, or shutdown
     if (afkActive()) return; // the away daemon owns supervision while afk
     if (branchBroken) return; // fail back to today's wake-to-main path
+    const batch = { ...offer.batch };
     offer.accept();
-    enqueueWake(offer.message, generation);
+    if (!offer.accepted) return;
+    enqueueWake(offer.message, batch, generation);
   });
 
   pi.on?.("agent_start", () => {
@@ -660,6 +687,7 @@ ${context.command}
   // flushMirror after the complete pending batch reaches the branch.
   pi.on?.("turn_end", (_event, ctx) => {
     if (!branchConfigured() || !actingAsOwner()) return;
+    recoverBatch();
     try {
       pendingMirror.push(...collectMainDialog(ctx.sessionManager, mirrorCollection));
     } catch {
@@ -683,6 +711,7 @@ ${context.command}
   });
 
   pi.on?.("session_shutdown", () => {
+    if (actingAsOwner()) releaseBatch();
     shuttingDown = true;
     generation += 1;
     pendingMirror.length = 0;

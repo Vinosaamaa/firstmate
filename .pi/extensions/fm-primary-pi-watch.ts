@@ -10,7 +10,7 @@
 // callbacks from a prior generation are no-ops against the active replacement.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -87,6 +87,7 @@ const fmRoot = process.env.FM_ROOT_OVERRIDE || root;
 const state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 const config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 const armScript = `${fmRoot}/bin/fm-watch-arm.sh`;
+const branchBatchScript = `${fmRoot}/bin/fm-branch-wake-batch.sh`;
 const marker = `${state}/.pi-watch-extension-loaded`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
@@ -130,7 +131,10 @@ function pidAlive(pid: string): boolean {
   }
 }
 
+let ownedLockPid = "";
+
 function lockOwnership(): LockOwnership {
+  ownedLockPid = "";
   let lockPid = "";
   try {
     lockPid = readFileSync(`${state}/.lock`, "utf8").trim();
@@ -140,7 +144,10 @@ function lockOwnership(): LockOwnership {
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "other";
   let pid = String(process.pid);
   for (let i = 0; i < 8; i += 1) {
-    if (pid === lockPid) return "owned";
+    if (pid === lockPid) {
+      ownedLockPid = lockPid;
+      return "owned";
+    }
     pid = parentPid(pid);
     if (!pid || pid === "1") break;
   }
@@ -296,65 +303,60 @@ export default function (pi: ExtensionAPI) {
     return confirmHandlingDelivery(snapshot());
   }
 
-  // Resolve every unread row that the branch's mandatory fm-wake-drain call
-  // would present. Only task-local signal/stale rows can be delegated: a
-  // fleet-wide check/heartbeat or an unresolvable task stays with main. This
-  // prevents one project's autonomy grant from authorizing work on another
-  // project merely because both projects share a firstmate home.
-  function projectsForUnreadWake(): string[] {
-    let queue = "";
-    try {
-      queue = readFileSync(`${state}/.wake-queue`, "utf8");
-    } catch {
-      return [];
-    }
-
-    const projects = new Set<string>();
-    const metadata = new Map<string, string>();
-    try {
-      for (const name of readdirSync(state)) {
-        if (!name.endsWith(".meta")) continue;
-        const task = name.slice(0, -5);
-        const fields = readFileSync(`${state}/${name}`, "utf8").split(/\r?\n/);
-        const project = fields.find((line) => line.startsWith("project="))?.slice(8) ?? "";
-        const window = fields.find((line) => line.startsWith("window="))?.slice(7) ?? "";
-        if (project) {
-          metadata.set(task, project);
-          if (window) metadata.set(window, project);
-        }
-      }
-    } catch {
-      return [];
-    }
-
-    let found = false;
-    for (const line of queue.split(/\r?\n/)) {
+  function snapshotUnreadWakeBatch(): { project: string; through: number; digest: string } | null {
+    if (lockOwnership() !== "owned") return null;
+    const result = spawnSync("bash", [branchBatchScript], {
+      cwd: fmRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FM_HOME: fmHome,
+        FM_STATE_OVERRIDE: state,
+        FM_ROOT_OVERRIDE: fmRoot,
+        FM_BRANCH_OWNER_PID: ownedLockPid,
+      },
+    });
+    if (result.status !== 0) return null;
+    const fields = new Map<string, string>();
+    for (const line of result.stdout.split(/\r?\n/)) {
       if (!line) continue;
-      const fields = line.split("\t");
-      if (fields.length < 4 || !/^[0-9]+$/.test(fields[1])) continue;
-      const kind = fields[2];
-      const key = fields[3];
-      let project = "";
-      if (kind === "signal") {
-        const task = key.replace(/\.(?:status|turn-ended)$/, "");
-        project = metadata.get(task) ?? "";
-      } else if (kind === "stale") {
-        project = metadata.get(key) ?? metadata.get(key.replace(/^fm-/, "")) ?? "";
-      } else {
-        return [];
-      }
-      if (!project) return [];
-      found = true;
-      projects.add(project);
+      const separator = line.indexOf("\t");
+      if (separator <= 0) return null;
+      const key = line.slice(0, separator);
+      if (fields.has(key)) return null;
+      fields.set(key, line.slice(separator + 1));
     }
-    return found ? [...projects] : [];
+    const project = fields.get("project") ?? "";
+    const through = Number(fields.get("through"));
+    const digest = fields.get("digest") ?? "";
+    if (fields.size !== 3 || !project || !Number.isSafeInteger(through) || through <= 0) return null;
+    if (!/^(?:sha256:[0-9a-f]{64}|cksum:[0-9]+:[0-9]+)$/.test(digest)) return null;
+    return { project, through, digest };
+  }
+
+  function claimUnreadWakeBatch(batch: { through: number; digest: string }): boolean {
+    if (lockOwnership() !== "owned") return false;
+    const result = spawnSync("bash", [branchBatchScript, "claim", String(batch.through), batch.digest], {
+      cwd: fmRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FM_HOME: fmHome,
+        FM_STATE_OVERRIDE: state,
+        FM_ROOT_OVERRIDE: fmRoot,
+        FM_BRANCH_OWNER_PID: ownedLockPid,
+      },
+    });
+    return result.status === 0;
   }
 
   // Offer an ordinary, project-scoped actionable wake to the supervision
   // branch. A synchronous accept means the branch now owns delivery and
   // handling; every unsafe or unaccepted offer keeps today's main path.
   function offerWakeToBranch(message: string): boolean {
-    const offer = createBranchDispatchOffer(message, projectsForUnreadWake());
+    const batch = snapshotUnreadWakeBatch();
+    if (!batch) return false;
+    const offer = createBranchDispatchOffer(message, [batch.project], batch, () => claimUnreadWakeBatch(batch));
     pi.events?.emit?.(FM_BRANCH_DISPATCH_EVENT, offer);
     return offer.accepted;
   }
