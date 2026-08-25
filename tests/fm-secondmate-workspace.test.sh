@@ -81,8 +81,25 @@ test_workspace_source_shapes_are_exclusive() {
   pass "secondmate workspace: source modes are explicit and mutually exclusive"
 }
 
+test_workspace_seed_refuses_protected_target_before_clone() {
+  local target out rc
+  target="$OUTER/unsafe-secondmate-home"
+  set +e
+  out=$(FM_HOME="$PARENT" FM_SECONDMATE_CHARTER='unsafe target fixture' \
+    "$ROOT/bin/fm-home-seed.sh" unsafe "$target" --workspace interview-prep 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "workspace seed must refuse a target inside the external workspace root"
+  assert_contains "$out" "protected workspace root" "workspace seed overlap refusal was not actionable"
+  assert_absent "$target" "workspace seed created a protected target before refusal"
+  assert_absent "$PARENT/data/unsafe/brief.md" "workspace seed wrote a charter before protected-target refusal"
+  assert_present "$PARENT/data/workspaces/interview-prep.workspace" "protected-target refusal removed the source pointer"
+  pass "secondmate workspace: protected targets fail before home creation"
+}
+
 setup_world
 test_workspace_charter_and_seed
 test_workspace_source_shapes_are_exclusive
+test_workspace_seed_refuses_protected_target_before_clone
 
 printf 'All secondmate workspace tests passed.\n'

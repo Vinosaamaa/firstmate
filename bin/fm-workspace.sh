@@ -16,7 +16,7 @@
 #   fm-workspace.sh list
 #   fm-workspace.sh show <workspace-id>
 #   fm-workspace.sh resolve <workspace-id> <member-id> [--path|--context]
-#   fm-workspace.sh copy <workspace-id> --to-home <absolute-firstmate-home>
+#   fm-workspace.sh copy <workspace-id> --to-home <absolute-firstmate-home> [--check-only]
 #   fm-workspace.sh remove <workspace-id> --confirm <workspace-id>
 #   fm-workspace.sh unregister ...                       # alias for remove
 #
@@ -109,6 +109,67 @@ require_absolute() {
 canonical_directory() {
   [ -d "$1" ] || return 1
   CDPATH='' cd -- "$1" 2>/dev/null && pwd -P
+}
+
+canonical_path_for_check() {
+  local path=$1 probe tail prefix parent base normalize_path
+  case "$path" in
+    /*) probe=$path ;;
+    *) probe="$(pwd -P)/$path" ;;
+  esac
+  while [ "$probe" != "/" ] && [ "${probe%/}" != "$probe" ]; do
+    probe=${probe%/}
+  done
+  if [ -e "$probe" ]; then
+    if [ -d "$probe" ]; then
+      CDPATH='' cd -- "$probe" 2>/dev/null && pwd -P
+    else
+      parent=$(dirname "$probe")
+      base=$(basename "$probe")
+      CDPATH='' cd -- "$parent" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base"
+    fi
+    return
+  fi
+  tail=
+  while [ ! -e "$probe" ] && [ "$probe" != "/" ]; do
+    tail="$(basename "$probe")${tail:+/$tail}"
+    probe=$(dirname "$probe")
+  done
+  if [ -d "$probe" ]; then
+    prefix=$(canonical_directory "$probe")
+  elif [ -e "$probe" ]; then
+    parent=$(dirname "$probe")
+    base=$(basename "$probe")
+    prefix=$(CDPATH='' cd -- "$parent" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base")
+  else
+    prefix=/
+  fi
+  normalize_path="$prefix"
+  while [ -n "$tail" ]; do
+    base=${tail%%/*}
+    if [ "$tail" = "$base" ]; then
+      tail=
+    else
+      tail=${tail#*/}
+    fi
+    case "$base" in
+      ''|.) ;;
+      ..)
+        if [ "$normalize_path" != "/" ]; then
+          normalize_path=${normalize_path%/*}
+          [ -n "$normalize_path" ] || normalize_path=/
+        fi
+        ;;
+      *)
+        if [ "$normalize_path" = "/" ]; then
+          normalize_path="/$base"
+        else
+          normalize_path="$normalize_path/$base"
+        fi
+        ;;
+    esac
+  done
+  printf '%s\n' "$normalize_path"
 }
 
 path_is_within_or_equal() {
@@ -703,8 +764,27 @@ command_resolve() {
   esac
 }
 
+reject_copy_target_overlap() {
+  local target=$1 protected
+  protected=$(canonical_directory "$FM_ROOT") || die "firstmate repo is missing or not a directory: $FM_ROOT"
+  if path_is_within_or_equal "$protected" "$target"; then
+    die "target firstmate home cannot be equal to or inside protected path '$protected': $target"
+  fi
+  if path_is_within_or_equal "$REC_ROOT" "$target"; then
+    die "target firstmate home cannot be equal to or inside protected workspace root '$REC_ROOT': $target"
+  fi
+  local idx=0
+  while [ "$idx" -lt "${#REC_MEMBER_PATHS[@]}" ]; do
+    protected=${REC_MEMBER_PATHS[$idx]}
+    if path_is_within_or_equal "$protected" "$target"; then
+      die "target firstmate home cannot be equal to or inside protected member repository '$protected': $target"
+    fi
+    idx=$((idx + 1))
+  done
+}
+
 command_copy() {
-  local id=${1:-} target_home='' arg source_record target_real target_record idx
+  local id=${1:-} target_home='' check_only=0 arg source_record target_real target_record idx
   local args=()
   [ -n "$id" ] || die "copy requires a workspace id"
   valid_id "$id" || die "invalid workspace id: $id"
@@ -719,20 +799,28 @@ command_copy() {
         shift
         ;;
       --to-home=*) target_home=${arg#--to-home=} ;;
+      --check-only) check_only=1 ;;
       *) die "unknown copy option: $arg" ;;
     esac
   done
   [ -n "$target_home" ] || die "copy requires --to-home <absolute-firstmate-home>"
   require_absolute "target firstmate home" "$target_home"
-  target_real=$(canonical_directory "$target_home") \
-    || die "target firstmate home is missing or not a directory: $target_home"
+  if [ "$check_only" -eq 1 ]; then
+    target_real=$(canonical_path_for_check "$target_home") \
+      || die "target firstmate home cannot be resolved: $target_home"
+  else
+    target_real=$(canonical_directory "$target_home") \
+      || die "target firstmate home is missing or not a directory: $target_home"
+  fi
   [ "$target_real" != "$(canonical_directory "$FM_HOME")" ] \
     || die "target firstmate home must differ from the active home"
-  [ -f "$target_real/AGENTS.md" ] && [ -d "$target_real/bin" ] \
-    || die "target is not a firstmate home: $target_real"
 
   validate_registry || exit 1
   load_named_record "$id" || exit 1
+  reject_copy_target_overlap "$target_real"
+  [ "$check_only" -eq 0 ] || return 0
+  [ -f "$target_real/AGENTS.md" ] && [ -d "$target_real/bin" ] \
+    || die "target is not a firstmate home: $target_real"
   source_record=$(record_path "$id")
   target_record="$target_real/data/workspaces/$id.workspace"
   if [ -e "$target_record" ] || [ -L "$target_record" ]; then
@@ -771,7 +859,7 @@ command_copy() {
 }
 
 command_remove() {
-  local id=${1:-} confirm='' arg target first second extra
+  local id=${1:-} confirm='' expected_record='' arg target first second extra
   [ -n "$id" ] || die "remove requires a workspace id"
   valid_id "$id" || die "invalid workspace id: $id"
   shift || true
@@ -785,6 +873,12 @@ command_remove() {
         shift
         ;;
       --confirm=*) confirm=${arg#--confirm=} ;;
+      --if-matches)
+        [ "$#" -gt 0 ] || die "--if-matches requires a record path"
+        expected_record=$1
+        shift
+        ;;
+      --if-matches=*) expected_record=${arg#--if-matches=} ;;
       *) die "unknown remove option: $arg" ;;
     esac
   done
@@ -800,6 +894,12 @@ command_remove() {
     || die "cannot read external workspace id: $target"
   [ "$first" = id ] && [ "$second" = "$id" ] && [ -z "$extra" ] \
     || die "external workspace record id does not match '$id': $target"
+  if [ -n "$expected_record" ]; then
+    [ -f "$expected_record" ] && [ ! -L "$expected_record" ] \
+      || die "expected workspace record is missing or unsafe: $expected_record"
+    cmp -s "$expected_record" "$target" \
+      || die "external workspace record does not match the expected pointer: $target"
+  fi
   rm -f -- "$target" || die "cannot remove external workspace pointer record: $target"
   printf 'unregistered workspace %s; external root and repositories were not touched\n' "$id"
 }

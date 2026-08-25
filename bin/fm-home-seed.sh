@@ -655,7 +655,8 @@ seed_rollback() {
       if [ "${SEED_WORKSPACE_CREATED:-0}" = 1 ] && [ -n "${SEED_WORKSPACE_ID:-}" ]; then
         (
           unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
-          FM_HOME="$SEED_HOME" "$FM_ROOT/bin/fm-workspace.sh" remove "$SEED_WORKSPACE_ID" --confirm "$SEED_WORKSPACE_ID" >/dev/null 2>&1
+          FM_HOME="$SEED_HOME" "$FM_ROOT/bin/fm-workspace.sh" remove "$SEED_WORKSPACE_ID" \
+            --confirm "$SEED_WORKSPACE_ID" --if-matches "$DATA/workspaces/$SEED_WORKSPACE_ID.workspace" >/dev/null 2>&1
         ) || true
       fi
       if [ -n "${SEED_BACKUP_DIR:-}" ] && [ "${SEED_HOME_BACKED_UP:-0}" = 1 ]; then
@@ -832,7 +833,7 @@ refuse_mismatched_workspace_charter() {  # <id> <brief> <workspace-id>
 }
 
 seed_home() {
-  local id=$1 requested_home=$2 requested_abs home projects_csv project project_dst charter_summary charter_scope
+  local id=$1 requested_home=$2 requested_abs home projects_csv project project_dst charter_summary charter_scope workspace_copy_result
   local no_projects=0 workspace_id='' arg
   local filtered=()
   shift 2
@@ -911,10 +912,16 @@ seed_home() {
     SEED_HOME_ACQUIRED=1
     home=$(acquire_treehouse_home "$id")
     SEED_HOME="$home"
+    if [ -n "$workspace_id" ]; then
+      FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$home" --check-only >/dev/null || return 1
+    fi
     home=$(verify_firstmate_home "$home")
   else
     requested_abs=$(abs_path_for_new "$requested_home")
     refuse_active_home_path "$requested_abs" || return 1
+    if [ -n "$workspace_id" ]; then
+      FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$requested_abs" --check-only >/dev/null || return 1
+    fi
     validate_home_assignment "$id" "$requested_abs" || return 1
     SEED_HOME="$requested_abs"
     [ -e "$requested_abs" ] || SEED_HOME_CREATED=1
@@ -987,8 +994,15 @@ seed_home() {
   }
 
   if [ -n "$workspace_id" ]; then
-    [ -e "$home/data/workspaces/$workspace_id.workspace" ] || SEED_WORKSPACE_CREATED=1
-    FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$home" >/dev/null
+    workspace_copy_result=$(FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$home")
+    case "$workspace_copy_result" in
+      "copied workspace $workspace_id to "*) SEED_WORKSPACE_CREATED=1 ;;
+      "workspace $workspace_id already matches in "*) SEED_WORKSPACE_CREATED=0 ;;
+      *)
+        echo "error: workspace copy returned an unrecognized result for $workspace_id" >&2
+        return 1
+        ;;
+    esac
   else
     for project in "$@"; do
       project_dst=$(validate_project_destination "$home" "$project") || return 1

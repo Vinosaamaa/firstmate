@@ -361,7 +361,7 @@ test_copy_preserves_pointer_without_cloning() {
 }
 
 test_copy_refuses_conflicting_or_unsafe_targets() {
-  local home target outer source_member target_outer target_member target_record before out rc outside
+  local home target outer source_member target_outer target_member target_record before out rc outside protected_target
   home=$(new_home copy-safety-source)
   target="$TMP_ROOT/copy-safety-target/home"
   mkdir -p "$target/bin" "$target/data" "$target/projects"
@@ -408,6 +408,17 @@ test_copy_refuses_conflicting_or_unsafe_targets() {
   assert_contains "$out" "target workspace record is unsafe" "unsafe target refusal was not actionable"
   [ -L "$target_record" ] || fail "unsafe target refusal replaced the symlinked pointer"
   [ "$(cat "$outside")" = 'outside pointer' ] || fail "unsafe target refusal changed the outside pointer"
+
+  protected_target="$outer/secondmate-home"
+  mkdir -p "$protected_target/bin" "$protected_target/data" "$protected_target/projects"
+  printf '# Firstmate\n' > "$protected_target/AGENTS.md"
+  set +e
+  out=$(FM_HOME="$home" "$WORKSPACE" copy copy-safety --to-home "$protected_target" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "copy must refuse a target inside the external workspace root"
+  assert_contains "$out" "protected workspace root" "workspace-root overlap refusal was not actionable"
+  assert_absent "$protected_target/data/workspaces/copy-safety.workspace" "protected workspace target received a pointer"
   pass "fm-workspace: conflicting and unsafe pointer targets fail closed"
 }
 
