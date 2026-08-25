@@ -56,8 +56,8 @@ The synchronized upstream also adds durable local and remote steering inboxes, p
 
 ## Orchestrator landscape
 
-As of 2026-08-25, Firstmate and Gas Town are free MIT-licensed, backend-flexible orchestrators with durable multi-project state; Conductor provides the most polished free local GUI across several harnesses; Codex app and Claude Code Agent Teams provide the strongest vendor-native experience but remain tied to their respective model ecosystems.
-Start free with Firstmate when durable supervision, explicit delivery gates, and multi-repository routing matter, or Conductor Free when a Mac GUI matters more; evaluate Gas Town for larger, workflow-heavy fleets, and pay for a vendor-native option only when its integrated experience offsets provider lock-in and usage cost.
+As of 2026-08-25, Firstmate and Gas Town are free MIT-licensed, backend-flexible orchestrators with durable multi-project state; Conductor provides a polished free local GUI across several harnesses; ChatGPT desktop with Codex and Claude Code Agent Teams provide vendor-native experiences tied to their respective model ecosystems.
+Start free with Firstmate when durable supervision, explicit delivery gates, and multi-repository routing matter, or Conductor Free when a Mac GUI matters more; evaluate Gas Town for an existing larger, workflow-heavy fleet while accounting for its succession by Gas City, and choose a vendor-native option when its integrated experience offsets provider lock-in and usage limits.
 The [detailed orchestrator comparison](docs/verification/coding-agent-orchestrators.md) records feature, maturity, licensing, current pricing, official sources, and clearly labeled Reddit and X observations.
 
 ## Features
