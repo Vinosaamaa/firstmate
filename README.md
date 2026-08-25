@@ -39,6 +39,15 @@ An agent distro is a portable directory of instructions, skills, tooling, polici
 There is no app to install: the cloned repo is the distro - `AGENTS.md`, bundled firstmate skills, and helper scripts that any terminal coding agent can follow.
 Launching a supported harness inside it instantiates your first mate - and makes you the captain.
 
+## Fork-specific features
+
+Compared with upstream, this fork currently includes:
+
+- **Persistent crew identity and visible naming** - human-friendly callsigns, names-first task routing, stable runtime identity, and Codex/Herdr titles rendered as `Callsign · ProjectCode · TaskLabel`.
+- **External workspace routing** - pointer-based registration of non-Git outer workspaces with explicit member-repository selection while preserving each member repository's own instructions and isolated worktree lifecycle.
+- **Opt-in Codex continuity** - ship tasks can park and later resume an exact recorded Codex session; ordinary lifecycle operations remain disposable.
+- **Project-scoped Pi supervision** - the persistent Pi supervision branch activates only for explicitly granted project metadata, while unscoped, mixed, and fleet-wide wakes stay on the main conversation.
+
 ## Features
 
 - **One liaison** - you talk only to the first mate; it dispatches, supervises, escalates only real decisions, and reports plain outcomes.

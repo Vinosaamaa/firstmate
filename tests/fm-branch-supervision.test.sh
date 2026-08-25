@@ -173,6 +173,10 @@ test_mutating_scripts_refuse_the_other_actors_lease() {
   git init -q -b main "$root"
   git -C "$root" commit -q --allow-empty -m init
   ln -s "$ROOT/bin" "$root/bin"
+  # The fork resolves names before the lease guard. Give the held selector a
+  # migration-compatible legacy meta record so the lease remains the first
+  # meaningful failure for this guard test.
+  printf 'harness=claude\n' > "$home/state/task-held.meta"
   FM_HOME="$home" FM_SUPERVISION_ACTOR=branch FM_LEASE_HOLDER_PID=$$ "$ROOT/bin/fm-lease.sh" claim task-held --actor branch \
     || fail "fixture lease claim failed"
 
@@ -185,7 +189,7 @@ test_mutating_scripts_refuse_the_other_actors_lease() {
   out=$(FM_HOME="$home" "$ROOT/bin/fm-control.sh" task-unheld interrupt 2>&1)
   status=$?
   [ "$status" -ne 6 ] || fail "unleased fm-control still hit the lease refusal"
-  assert_contains "$out" "no task 'task-unheld'" "unleased fm-control lost its ordinary error"
+  assert_contains "$out" "no callsign or task 'task-unheld'" "unleased fm-control lost its ordinary names-first error"
 
   # fm-teardown: same refusal shape before any teardown work.
   out=$(FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" task-held 2>&1)
@@ -249,7 +253,7 @@ test_home_without_branch_is_untouched() {
   out=$(FM_HOME="$home" "$ROOT/bin/fm-control.sh" task-any interrupt 2>&1)
   status=$?
   [ "$status" -ne 6 ] || fail "no-branch home hit a lease refusal in fm-control"
-  assert_contains "$out" "no task 'task-any'" "no-branch fm-control lost its ordinary error"
+  assert_contains "$out" "no callsign or task 'task-any'" "no-branch fm-control lost its ordinary names-first error"
   out=$(FM_HOME="$home" "$ROOT/bin/fm-pr-merge.sh" 2>&1)
   status=$?
   [ "$status" -eq 2 ] || fail "no-branch fm-pr-merge usage error changed: $status: $out"
