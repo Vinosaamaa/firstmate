@@ -361,7 +361,7 @@ test_copy_preserves_pointer_without_cloning() {
 }
 
 test_copy_refuses_conflicting_or_unsafe_targets() {
-  local home target outer source_member target_outer target_member target_record before out rc outside protected_target
+  local home target outer source_member target_outer target_member target_record before out rc outside protected_target nested_target
   home=$(new_home copy-safety-source)
   target="$TMP_ROOT/copy-safety-target/home"
   mkdir -p "$target/bin" "$target/data" "$target/projects"
@@ -419,7 +419,49 @@ test_copy_refuses_conflicting_or_unsafe_targets() {
   expect_code 1 "$rc" "copy must refuse a target inside the external workspace root"
   assert_contains "$out" "protected workspace root" "workspace-root overlap refusal was not actionable"
   assert_absent "$protected_target/data/workspaces/copy-safety.workspace" "protected workspace target received a pointer"
+
+  nested_target="$home/nested-home"
+  mkdir -p "$nested_target/bin" "$nested_target/data" "$nested_target/projects"
+  printf '# Firstmate\n' > "$nested_target/AGENTS.md"
+  set +e
+  out=$(FM_HOME="$home" "$WORKSPACE" copy copy-safety --to-home "$nested_target" 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "copy must refuse a target inside the active firstmate home"
+  assert_contains "$out" "inside the active home" "active-home descendant refusal was not actionable"
+  assert_absent "$nested_target/data/workspaces/copy-safety.workspace" "active-home descendant received a pointer"
   pass "fm-workspace: conflicting and unsafe pointer targets fail closed"
+}
+
+test_copy_receipt_owns_only_its_published_inode() {
+  local home target outer target_record receipt replacement out
+  home=$(new_home copy-receipt-source)
+  target="$TMP_ROOT/copy-receipt-target/home"
+  mkdir -p "$target/bin" "$target/data" "$target/projects"
+  printf '# Firstmate\n' > "$target/AGENTS.md"
+  outer="$TMP_ROOT/copy-receipt-source/domain"
+  mkdir -p "$outer"
+  outer=$(cd "$outer" && pwd -P)
+  git_repo "$outer/member"
+  FM_HOME="$home" "$WORKSPACE" add receipt-domain \
+    --root "$outer" --scope 'Receipt ownership fixture.' \
+    --member "member=$outer/member" >/dev/null
+
+  FM_HOME="$home" "$WORKSPACE" copy receipt-domain --to-home "$target" --receipt seed-receipt >/dev/null
+  target_record="$target/data/workspaces/receipt-domain.workspace"
+  receipt="$target/data/.workspace-copy-receipts/seed-receipt"
+  [ "$target_record" -ef "$receipt" ] || fail "copy receipt did not identify the published pointer inode"
+
+  replacement="$target/data/workspaces/replacement.workspace"
+  cp "$target_record" "$replacement"
+  mv "$replacement" "$target_record"
+  out=$(FM_HOME="$target" "$WORKSPACE" _release-copy receipt-domain --receipt seed-receipt --rollback)
+  [ "$out" = preserved ] || fail "rollback did not preserve an identical pointer owned by another publication: $out"
+  assert_present "$target_record" "receipt rollback removed another publication's identical pointer"
+  assert_absent "$receipt" "receipt rollback left its ownership receipt behind"
+  cmp -s "$home/data/workspaces/receipt-domain.workspace" "$target_record" \
+    || fail "foreign replacement pointer bytes changed during receipt rollback"
+  pass "fm-workspace: rollback receipts remove only their owned pointer inode"
 }
 
 test_empty_non_git_outer_with_three_members
@@ -432,5 +474,6 @@ test_existing_managed_clone_registry_is_unchanged
 test_brief_propagates_validated_workspace_route
 test_copy_preserves_pointer_without_cloning
 test_copy_refuses_conflicting_or_unsafe_targets
+test_copy_receipt_owns_only_its_published_inode
 
 printf 'All fm-workspace tests passed.\n'

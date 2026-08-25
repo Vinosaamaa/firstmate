@@ -534,7 +534,7 @@ SEED_CHARTER_EXISTED=0
 SEED_MARKER_EXISTED=0
 SEED_PARENT_MARKER_EXISTED=0
 SEED_WORKSPACE_ID=
-SEED_WORKSPACE_CREATED=0
+SEED_WORKSPACE_RECEIPT=
 
 restore_seed_file() {
   local existed=$1 backup=$2 path=$3
@@ -652,11 +652,11 @@ seed_rollback() {
           seed_remove_created_project "$project_path"
         done < "$SEED_CREATED_PROJECTS_FILE"
       fi
-      if [ "${SEED_WORKSPACE_CREATED:-0}" = 1 ] && [ -n "${SEED_WORKSPACE_ID:-}" ]; then
+      if [ -n "${SEED_WORKSPACE_RECEIPT:-}" ] && [ -n "${SEED_WORKSPACE_ID:-}" ]; then
         (
           unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
-          FM_HOME="$SEED_HOME" "$FM_ROOT/bin/fm-workspace.sh" remove "$SEED_WORKSPACE_ID" \
-            --confirm "$SEED_WORKSPACE_ID" --if-matches "$DATA/workspaces/$SEED_WORKSPACE_ID.workspace" >/dev/null 2>&1
+          FM_HOME="$SEED_HOME" "$FM_ROOT/bin/fm-workspace.sh" _release-copy "$SEED_WORKSPACE_ID" \
+            --receipt "$SEED_WORKSPACE_RECEIPT" --rollback >/dev/null 2>&1
         ) || true
       fi
       if [ -n "${SEED_BACKUP_DIR:-}" ] && [ "${SEED_HOME_BACKED_UP:-0}" = 1 ]; then
@@ -899,7 +899,7 @@ seed_home() {
   SEED_PARENT_BRIEF_CREATED=0
   SEED_PARENT_BRIEF_DIR_CREATED=0
   SEED_WORKSPACE_ID=$workspace_id
-  SEED_WORKSPACE_CREATED=0
+  SEED_WORKSPACE_RECEIPT=
   SEED_SUB_REG_EXISTED=0
   SEED_CHARTER_EXISTED=0
   SEED_MARKER_EXISTED=0
@@ -994,10 +994,12 @@ seed_home() {
   }
 
   if [ -n "$workspace_id" ]; then
-    workspace_copy_result=$(FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" --to-home "$home")
+    SEED_WORKSPACE_RECEIPT="seed-$$-${RANDOM:-0}-${RANDOM:-0}"
+    workspace_copy_result=$(FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" copy "$workspace_id" \
+      --to-home "$home" --receipt "$SEED_WORKSPACE_RECEIPT")
     case "$workspace_copy_result" in
-      "copied workspace $workspace_id to "*) SEED_WORKSPACE_CREATED=1 ;;
-      "workspace $workspace_id already matches in "*) SEED_WORKSPACE_CREATED=0 ;;
+      "copied workspace $workspace_id to "*) ;;
+      "workspace $workspace_id already matches in "*) SEED_WORKSPACE_RECEIPT= ;;
       *)
         echo "error: workspace copy returned an unrecognized result for $workspace_id" >&2
         return 1
@@ -1038,6 +1040,14 @@ seed_home() {
   mv -f -- "$home/$SUB_HOME_MARKER.tmp.$$" "$home/$SUB_HOME_MARKER"
   write_registry "$id" "$home" "$projects_csv" "$SEED_PARENT_BRIEF"
   validate_registry
+  if [ -n "$SEED_WORKSPACE_RECEIPT" ]; then
+    (
+      unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+      FM_HOME="$home" "$FM_ROOT/bin/fm-workspace.sh" _release-copy "$workspace_id" \
+        --receipt "$SEED_WORKSPACE_RECEIPT" >/dev/null
+    ) || return 1
+    SEED_WORKSPACE_RECEIPT=
+  fi
   SEED_COMMITTED=1
   seed_registry_lock_release
   trap - EXIT

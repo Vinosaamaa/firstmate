@@ -48,6 +48,7 @@ test_workspace_charter_and_seed() {
   [ -z "$(find "$CHILD/projects" -mindepth 1 -maxdepth 1 -print)" ] \
     || fail "workspace seed created duplicate project clones"
   assert_absent "$CHILD/data/projects.md" "workspace seed created a managed-project registry"
+  assert_absent "$CHILD/data/.workspace-copy-receipts" "successful workspace seed retained a copy receipt"
   assert_grep 'projects: ;' "$PARENT/data/secondmates.md" "workspace-backed route claimed project clones"
   [ "$(FM_HOME="$CHILD" "$ROOT/bin/fm-workspace.sh" resolve interview-prep live --path)" = "$OUTER/interview-arc-live" ] \
     || fail "secondmate home did not resolve the copied workspace member"
@@ -97,9 +98,28 @@ test_workspace_seed_refuses_protected_target_before_clone() {
   pass "secondmate workspace: protected targets fail before home creation"
 }
 
+test_workspace_seed_refuses_symlinked_new_target_before_clone() {
+  local alias target out rc
+  alias="$TMP_ROOT/dangling-target-alias"
+  target="$OUTER/not-yet-created-home-parent"
+  ln -s "$target" "$alias"
+  set +e
+  out=$(FM_HOME="$PARENT" FM_SECONDMATE_CHARTER='symlink target fixture' \
+    "$ROOT/bin/fm-home-seed.sh" symlinked "$alias/home" --workspace interview-prep 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "workspace seed must reject symlink-bearing new targets before cloning"
+  assert_contains "$out" "path contains a symlink" "symlink-bearing target refusal was not actionable"
+  assert_absent "$target" "workspace seed cloned through a dangling symlink into the protected workspace"
+  assert_absent "$PARENT/data/symlinked/brief.md" "symlink-bearing target refusal left a charter brief"
+  assert_present "$PARENT/data/workspaces/interview-prep.workspace" "symlink-bearing target refusal removed the source pointer"
+  pass "secondmate workspace: symlink-bearing new targets fail before home creation"
+}
+
 setup_world
 test_workspace_charter_and_seed
 test_workspace_source_shapes_are_exclusive
 test_workspace_seed_refuses_protected_target_before_clone
+test_workspace_seed_refuses_symlinked_new_target_before_clone
 
 printf 'All secondmate workspace tests passed.\n'

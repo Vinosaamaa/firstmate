@@ -244,7 +244,7 @@ record_error() {
 }
 
 load_record() {
-  local file=$1 line=0 kind a b c extra phase=header expected_name
+  local file=$1 expected_id=${2:-} line=0 kind a b c extra phase=header expected_name
   local canonical actual_hash idx other_idx
   REC_ID=
   REC_ROOT=
@@ -306,9 +306,14 @@ load_record() {
   done < "$file"
 
   [ "$phase" = members ] || record_error "$file" "record is incomplete or has no member repositories" || return 1
-  expected_name="$REC_ID.workspace"
-  [ "$(basename "$file")" = "$expected_name" ] \
-    || record_error "$file" "filename does not match workspace id '$REC_ID'" || return 1
+  if [ -n "$expected_id" ]; then
+    [ "$REC_ID" = "$expected_id" ] \
+      || record_error "$file" "record id does not match expected workspace '$expected_id'" || return 1
+  else
+    expected_name="$REC_ID.workspace"
+    [ "$(basename "$file")" = "$expected_name" ] \
+      || record_error "$file" "filename does not match workspace id '$REC_ID'" || return 1
+  fi
   require_absolute "stored workspace root" "$REC_ROOT"
   canonical=$(canonical_directory "$REC_ROOT") \
     || record_error "$file" "workspace root is missing or not a directory: $REC_ROOT" || return 1
@@ -622,8 +627,8 @@ command_add() {
 
   acquire_registry_lock
   ensure_registry_for_write
-  validate_registry || exit 1
   target=$(record_path "$id")
+  validate_registry || exit 1
   [ ! -e "$target" ] && [ ! -L "$target" ] || die "external workspace is already registered: $id"
   # Check cross-record ownership before publication. validate_registry already
   # proved every existing record safe, so these reads cannot select around drift.
@@ -766,6 +771,10 @@ command_resolve() {
 
 reject_copy_target_overlap() {
   local target=$1 protected
+  protected=$(canonical_directory "$FM_HOME") || die "active firstmate home is missing or not a directory: $FM_HOME"
+  if path_is_within_or_equal "$protected" "$target"; then
+    die "target firstmate home cannot be equal to or inside the active home '$protected': $target"
+  fi
   protected=$(canonical_directory "$FM_ROOT") || die "firstmate repo is missing or not a directory: $FM_ROOT"
   if path_is_within_or_equal "$protected" "$target"; then
     die "target firstmate home cannot be equal to or inside protected path '$protected': $target"
@@ -783,9 +792,128 @@ reject_copy_target_overlap() {
   done
 }
 
+reject_symlink_components() {
+  local path=$1 remaining component prefix=/ candidate
+  case "$path" in
+    /*) remaining=${path#/} ;;
+    *) remaining="$(pwd -P)/$path"; remaining=${remaining#/} ;;
+  esac
+  while [ -n "$remaining" ]; do
+    component=${remaining%%/*}
+    if [ "$remaining" = "$component" ]; then
+      remaining=
+    else
+      remaining=${remaining#*/}
+    fi
+    case "$component" in
+      ''|.) continue ;;
+      ..)
+        if [ "$prefix" != / ]; then
+          prefix=${prefix%/*}
+          [ -n "$prefix" ] || prefix=/
+        fi
+        continue
+        ;;
+    esac
+    if [ "$prefix" = / ]; then
+      candidate="/$component"
+    else
+      candidate="$prefix/$component"
+    fi
+    [ ! -L "$candidate" ] || die "new target firstmate home path contains a symlink: $candidate"
+    prefix=$candidate
+  done
+}
+
+receipt_directory() {
+  printf '%s/.workspace-copy-receipts\n' "$DATA"
+}
+
+receipt_path() {
+  local token=$1
+  valid_id "$token" || die "invalid workspace copy receipt: $token"
+  printf '%s/%s\n' "$(receipt_directory)" "$token"
+}
+
+ensure_receipt_directory_for_write() {
+  local dir
+  dir=$(receipt_directory)
+  [ ! -L "$dir" ] || die "workspace copy receipt directory must not be a symlink: $dir"
+  (umask 077; mkdir -p "$dir") || die "cannot create workspace copy receipt directory: $dir"
+  [ -d "$dir" ] || die "workspace copy receipt path is not a directory: $dir"
+}
+
+command_copy_record() {
+  local id=${1:-} source_record=${2:-} receipt_token=${3:-} target receipt='' file idx other_idx
+  local candidate_root candidate_member_paths=()
+  [ -n "$id" ] && [ -n "$source_record" ] || die "_copy-record requires a workspace id and source record"
+  [ "$#" -le 3 ] || die "_copy-record accepts a workspace id, source record, and optional receipt"
+  valid_id "$id" || die "invalid workspace id: $id"
+  require_absolute "source workspace record" "$source_record"
+  [ -f "$source_record" ] && [ ! -L "$source_record" ] \
+    || die "source workspace record is missing or unsafe: $source_record"
+  [ -z "$receipt_token" ] || receipt=$(receipt_path "$receipt_token")
+
+  acquire_registry_lock
+  ensure_registry_for_write
+  target=$(record_path "$id")
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    [ -f "$target" ] && [ ! -L "$target" ] || die "target workspace record is unsafe: $target"
+  fi
+  validate_registry || exit 1
+  if [ -n "$receipt" ]; then
+    [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || die "workspace copy receipt already exists: $receipt"
+  fi
+
+  TMP_RECORD=$(umask 077; mktemp "$REGISTRY/.${id}.workspace.XXXXXX") \
+    || die "cannot stage copied workspace record"
+  cp -- "$source_record" "$TMP_RECORD" || die "cannot stage copied workspace record"
+  chmod 600 "$TMP_RECORD" || die "cannot protect staged workspace record"
+  load_record "$TMP_RECORD" "$id" || die "source workspace record did not validate"
+
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    cmp -s "$TMP_RECORD" "$target" \
+      || die "target workspace '$id' differs from the active-home pointer: $target"
+    printf 'existing\n'
+    return 0
+  fi
+
+  candidate_root=$REC_ROOT
+  candidate_member_paths=("${REC_MEMBER_PATHS[@]}")
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    load_record "$file" || exit 1
+    [ "$REC_ROOT" != "$candidate_root" ] \
+      || die "workspace root is already registered by '$REC_ID': $candidate_root"
+    idx=0
+    while [ "$idx" -lt "${#REC_MEMBER_PATHS[@]}" ]; do
+      other_idx=0
+      while [ "$other_idx" -lt "${#candidate_member_paths[@]}" ]; do
+        [ "${REC_MEMBER_PATHS[$idx]}" != "${candidate_member_paths[$other_idx]}" ] \
+          || die "member path is already registered by '$REC_ID/${REC_MEMBER_IDS[$idx]}': ${candidate_member_paths[$other_idx]}"
+        other_idx=$((other_idx + 1))
+      done
+      idx=$((idx + 1))
+    done
+  done <<EOF
+$(registry_files)
+EOF
+
+  if [ -n "$receipt" ]; then
+    ensure_receipt_directory_for_write
+    [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || die "workspace copy receipt already exists: $receipt"
+    ln -- "$TMP_RECORD" "$receipt" || die "cannot create workspace copy receipt: $receipt"
+  fi
+  if ! mv -- "$TMP_RECORD" "$target"; then
+    [ -z "$receipt" ] || rm -f -- "$receipt" 2>/dev/null || true
+    die "cannot publish copied workspace record"
+  fi
+  TMP_RECORD=
+  printf 'created\n'
+}
+
 command_copy() {
-  local id=${1:-} target_home='' check_only=0 arg source_record target_real target_record idx
-  local args=()
+  local id=${1:-} target_home='' check_only=0 receipt_token='' arg source_record target_real result
   [ -n "$id" ] || die "copy requires a workspace id"
   valid_id "$id" || die "invalid workspace id: $id"
   shift || true
@@ -800,21 +928,34 @@ command_copy() {
         ;;
       --to-home=*) target_home=${arg#--to-home=} ;;
       --check-only) check_only=1 ;;
+      --receipt)
+        [ "$#" -gt 0 ] || die "--receipt requires a receipt id"
+        [ -z "$receipt_token" ] || die "--receipt may be supplied only once"
+        receipt_token=$1
+        shift
+        ;;
+      --receipt=*)
+        [ -z "$receipt_token" ] || die "--receipt may be supplied only once"
+        receipt_token=${arg#--receipt=}
+        ;;
       *) die "unknown copy option: $arg" ;;
     esac
   done
   [ -n "$target_home" ] || die "copy requires --to-home <absolute-firstmate-home>"
+  [ "$check_only" -eq 0 ] || [ -z "$receipt_token" ] || die "--receipt cannot be combined with --check-only"
+  [ -z "$receipt_token" ] || valid_id "$receipt_token" || die "invalid workspace copy receipt: $receipt_token"
   require_absolute "target firstmate home" "$target_home"
   if [ "$check_only" -eq 1 ]; then
+    if [ ! -d "$target_home" ]; then
+      reject_symlink_components "$target_home"
+    fi
     target_real=$(canonical_path_for_check "$target_home") \
       || die "target firstmate home cannot be resolved: $target_home"
   else
     target_real=$(canonical_directory "$target_home") \
       || die "target firstmate home is missing or not a directory: $target_home"
   fi
-  [ "$target_real" != "$(canonical_directory "$FM_HOME")" ] \
-    || die "target firstmate home must differ from the active home"
-
+  acquire_registry_lock
   validate_registry || exit 1
   load_named_record "$id" || exit 1
   reject_copy_target_overlap "$target_real"
@@ -822,40 +963,64 @@ command_copy() {
   [ -f "$target_real/AGENTS.md" ] && [ -d "$target_real/bin" ] \
     || die "target is not a firstmate home: $target_real"
   source_record=$(record_path "$id")
-  target_record="$target_real/data/workspaces/$id.workspace"
-  if [ -e "$target_record" ] || [ -L "$target_record" ]; then
-    [ -f "$target_record" ] && [ ! -L "$target_record" ] \
-      || die "target workspace record is unsafe: $target_record"
-    (
-      unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
-      FM_HOME="$target_real" "$SCRIPT_DIR/fm-workspace.sh" show "$id" >/dev/null
-    ) || die "target workspace registry is invalid: $target_real"
-    cmp -s "$source_record" "$target_record" \
-      || die "target workspace '$id' differs from the active-home pointer: $target_record"
-    printf 'workspace %s already matches in %s\n' "$id" "$target_real"
+  result=$(
+    unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
+    FM_HOME="$target_real" "$SCRIPT_DIR/fm-workspace.sh" _copy-record "$id" "$source_record" "$receipt_token"
+  ) || die "failed to copy workspace '$id' into $target_real"
+  case "$result" in
+    created) printf 'copied workspace %s to %s; external root and repositories were not touched\n' "$id" "$target_real" ;;
+    existing) printf 'workspace %s already matches in %s\n' "$id" "$target_real" ;;
+    *) die "workspace copy returned an invalid result for '$id'" ;;
+  esac
+}
+
+command_release_copy() {
+  local id=${1:-} receipt_token='' rollback=0 arg target receipt dir result=released
+  [ -n "$id" ] || die "_release-copy requires a workspace id"
+  valid_id "$id" || die "invalid workspace id: $id"
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    shift
+    case "$arg" in
+      --receipt)
+        [ "$#" -gt 0 ] || die "--receipt requires a receipt id"
+        [ -z "$receipt_token" ] || die "--receipt may be supplied only once"
+        receipt_token=$1
+        shift
+        ;;
+      --receipt=*)
+        [ -z "$receipt_token" ] || die "--receipt may be supplied only once"
+        receipt_token=${arg#--receipt=}
+        ;;
+      --rollback) rollback=1 ;;
+      *) die "unknown _release-copy option: $arg" ;;
+    esac
+  done
+  [ -n "$receipt_token" ] || die "_release-copy requires --receipt"
+  receipt=$(receipt_path "$receipt_token")
+  dir=$(receipt_directory)
+  acquire_registry_lock
+  if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
+    printf 'absent\n'
     return 0
   fi
-
-  args=(add "$REC_ID" --root "$REC_ROOT" --scope "$REC_SCOPE")
-  idx=0
-  while [ "$idx" -lt "${#REC_INSTRUCTION_PATHS[@]}" ]; do
-    args+=(--instruction-root "${REC_INSTRUCTION_PATHS[$idx]}")
-    idx=$((idx + 1))
-  done
-  idx=0
-  while [ "$idx" -lt "${#REC_MEMBER_IDS[@]}" ]; do
-    case "${REC_MEMBER_RELATIONS[$idx]}" in
-      contained) args+=(--member "${REC_MEMBER_IDS[$idx]}=${REC_MEMBER_PATHS[$idx]}") ;;
-      external) args+=(--external-member "${REC_MEMBER_IDS[$idx]}=${REC_MEMBER_PATHS[$idx]}") ;;
-      *) die "workspace '$id' has an unsupported member relation" ;;
-    esac
-    idx=$((idx + 1))
-  done
-  (
-    unset FM_DATA_OVERRIDE FM_ROOT_OVERRIDE
-    FM_HOME="$target_real" "$SCRIPT_DIR/fm-workspace.sh" "${args[@]}" >/dev/null
-  ) || die "failed to copy workspace '$id' into $target_real"
-  printf 'copied workspace %s to %s; external root and repositories were not touched\n' "$id" "$target_real"
+  [ -d "$dir" ] && [ ! -L "$dir" ] || die "workspace copy receipt directory is unsafe: $dir"
+  [ -f "$receipt" ] && [ ! -L "$receipt" ] || die "workspace copy receipt is unsafe: $receipt"
+  target=$(record_path "$id")
+  if [ "$rollback" -eq 1 ]; then
+    if [ -f "$target" ] && [ ! -L "$target" ] && [ "$target" -ef "$receipt" ]; then
+      rm -f -- "$target" || die "cannot roll back copied workspace pointer: $target"
+      result=removed
+    elif [ -e "$target" ] || [ -L "$target" ]; then
+      result=preserved
+    else
+      result=absent
+    fi
+  fi
+  rm -f -- "$receipt" || die "cannot release workspace copy receipt: $receipt"
+  rmdir -- "$dir" 2>/dev/null || true
+  printf '%s\n' "$result"
 }
 
 command_remove() {
@@ -911,6 +1076,8 @@ case "${1:-}" in
   show) shift; command_show "$@" ;;
   resolve) shift; command_resolve "$@" ;;
   copy) shift; command_copy "$@" ;;
+  _copy-record) shift; command_copy_record "$@" ;;
+  _release-copy) shift; command_release_copy "$@" ;;
   remove|unregister) shift; command_remove "$@" ;;
   *) die "unknown command: $1" ;;
 esac
