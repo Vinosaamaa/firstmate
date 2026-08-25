@@ -39,6 +39,27 @@ An agent distro is a portable directory of instructions, skills, tooling, polici
 There is no app to install: the cloned repo is the distro - `AGENTS.md`, bundled firstmate skills, and helper scripts that any terminal coding agent can follow.
 Launching a supported harness inside it instantiates your first mate - and makes you the captain.
 
+## Fork-specific features
+
+Compared with upstream, this fork currently includes:
+
+- **Persistent crew identity and visible naming** - human-friendly callsigns, names-first task routing, stable runtime identity, and Codex/Herdr titles rendered as `Callsign · ProjectCode · TaskLabel`.
+- **External workspace routing** - pointer-based registration of non-Git outer workspaces with explicit member-repository selection while preserving each member repository's own instructions and isolated worktree lifecycle.
+- **Opt-in Codex continuity** - ship tasks can park and later resume an exact recorded Codex session; ordinary lifecycle operations remain disposable.
+- **Project-scoped Pi supervision** - the persistent Pi supervision branch activates only for explicitly granted project metadata, while unscoped, mixed, and fleet-wide wakes stay on the main conversation.
+
+## What this upstream synchronization adds
+
+Kun's upstream added a persistent Pi supervision conversation and then made it the default Pi wake path, so routine fleet events can be handled in a second long-lived session while captain-relevant outcomes return to the main session.
+This fork keeps that multi-session mechanism but retains its narrower explicit-project grant, single-project batch, and main-conversation fallback boundaries.
+The synchronized upstream also adds durable local and remote steering inboxes, parallel startup network checks, and bounded remote-worker supervisor recovery.
+
+## Orchestrator landscape
+
+As of 2026-08-25, Firstmate and Gas Town are free MIT-licensed, backend-flexible orchestrators with durable multi-project state; Conductor provides a polished free local GUI across several harnesses; ChatGPT desktop with Codex and Claude Code Agent Teams provide vendor-native experiences tied to their respective model ecosystems.
+Start free with Firstmate when durable supervision, explicit delivery gates, and multi-repository routing matter, or Conductor Free when a Mac GUI matters more; evaluate Gas Town for an existing larger, workflow-heavy fleet while accounting for its succession by Gas City, and choose a vendor-native option when its integrated experience offsets provider lock-in and usage limits.
+The [detailed orchestrator comparison](docs/verification/coding-agent-orchestrators.md) records feature, maturity, licensing, current pricing, official sources, and clearly labeled Reddit and X observations.
+
 ## Features
 
 - **One liaison** - you talk only to the first mate; it dispatches, supervises, escalates only real decisions, and reports plain outcomes.

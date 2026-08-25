@@ -112,6 +112,9 @@ canonical_directory() {
 
 path_is_within_or_equal() {
   [ "$1" = "$2" ] && return 0
+  if [ "$1" = / ]; then
+    case "$2" in /*) return 0 ;; esac
+  fi
   case "$2" in
     "$1"/*) return 0 ;;
   esac

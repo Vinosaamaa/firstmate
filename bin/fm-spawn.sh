@@ -2970,24 +2970,19 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
 fi
-spawn_activate_persistent_identity() {
-  if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
-    CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || return 1
-  elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
-    CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || return 1
-  else
-    CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || return 1
-  fi
-  if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
-    # The record is published, so this task is now part of the set a teardown
-    # enumerates and locks per task. The set lock is only needed across that
-    # publication.
-    SPAWN_TASK_SET_LOCK_HELD=0
-    fm_lock_release "$SPAWN_TASK_SET_LOCK"
-  fi
-}
-if [ "$BACKEND" != tmux ]; then
-  spawn_activate_persistent_identity || exit 1
+if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
+  CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
+else
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+fi
+if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
+  # The record is published, so this task is now part of the set a teardown
+  # enumerates and locks per task. The set lock is only needed across that
+  # publication.
+  SPAWN_TASK_SET_LOCK_HELD=0
+  fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
@@ -3234,14 +3229,6 @@ if [ "$BACKEND" = tmux ]; then
     fi
     exit 1
   }
-  if ! spawn_activate_persistent_identity; then
-    if spawn_quarantine_tmux_identity; then
-      echo "error: task $ID launched, but its persistent identity could not be activated; the exact pane was retired and fail-closed metadata was retained" >&2
-    else
-      echo "error: task $ID launched, but its persistent identity could not be activated; cleanup is incomplete and fail-closed metadata was retained" >&2
-    fi
-    exit 1
-  fi
 fi
 if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
   if ! fm_codex_title_deliver \

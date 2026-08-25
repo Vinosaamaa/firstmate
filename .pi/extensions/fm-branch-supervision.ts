@@ -8,9 +8,10 @@
 // merges an append-only note to main's tail. Main's captain/assistant dialog
 // is mirrored into the branch as read-only fm-main-mirror context at main's
 // turn_end. Pi-only by construction: this file lives in .pi/extensions, so no
-// other harness ever loads it, and a home that has not explicitly granted the
-// wake's project in config/pi-supervision-branch (or runs away mode) keeps
-// today's wake-to-main behavior untouched.
+// other harness ever loads it. Supervision is default-on for every task once
+// this Pi session owns the fleet lock: no captain grant file is required.
+// Away mode (or a broken branch) keeps today's wake-to-main behavior
+// untouched regardless.
 //
 // Prefix stability (the cache contract, owner: bin/fm-branch-prompt.sh
 // header): the branch's system prompt is the generator's byte-stable output,
@@ -54,10 +55,20 @@ import {
   type ExtensionAPI,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Box, Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
+  type CalmPresentationState,
+  calmTranscriptClassIsVisible,
+  FIRSTMATE_CALM_PRESENTATION_EVENT,
+} from "./lib/fm-calm-visibility.ts";
+import {
+  activateEligibleRowsOwner,
+  deactivateEligibleRowsOwner,
   FM_BRANCH_DISPATCH_EVENT,
+  releaseEligibleRowsSnapshot,
+  scopeForUnreadWake,
+  writeEligibleRowsSnapshot,
   type BranchDispatchOffer,
 } from "./lib/fm-branch-dispatch.ts";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
@@ -77,6 +88,7 @@ const mirrorCursorFile = join(state, ".branch-mirror-cursor");
 const promptScript = join(fmRoot, "bin", "fm-branch-prompt.sh");
 const outcomeScript = join(fmRoot, "bin", "fm-branch-outcome.sh");
 const leaseScript = join(fmRoot, "bin", "fm-lease.sh");
+const wakeGrantScript = join(fmRoot, "bin", "fm-wake-grant.sh");
 const loadedMarker = join(state, ".pi-branch-extension-loaded");
 
 // Same tool set in the same order on every request (part of the cached
@@ -89,7 +101,7 @@ const BRANCH_TOOL_NAMES = ["read", "bash", "fm_branch_report"] as const;
 const branchCacheKey = `fm-branch-${createHash("sha256").update(fmHome).digest("hex").slice(0, 24)}`;
 
 const MIRROR_MESSAGE_CAP = 4000;
-
+const MERGE_NOTE_BOAT = "⛵";
 type MirrorItem = { tag: "captain" | "main"; text: string };
 type MirrorCursor = { file: string; index: number };
 type Verdict = "routine" | "captain";
@@ -125,10 +137,14 @@ function branchConfigured(): boolean {
   return grantedProjects().size > 0;
 }
 
-function offerIsGranted(offer: BranchDispatchOffer): boolean {
-  if (!Array.isArray(offer.projects) || offer.projects.length === 0) return false;
+function projectsAreGranted(projects: readonly string[]): boolean {
+  if (projects.length !== 1) return false;
   const grants = grantedProjects();
-  return grants.size > 0 && offer.projects.every((project) => grants.has(project));
+  return grants.has(projects[0]);
+}
+
+function offerEligible(offer: BranchDispatchOffer): boolean {
+  return offer.eligible === true && offer.heartbeat === false && projectsAreGranted(offer.projects);
 }
 
 function afkActive(): boolean {
@@ -311,10 +327,16 @@ export default function (pi: ExtensionAPI) {
   // of a generation also writes the diagnostic marker and clears stray branch
   // leases from a prior generation.
   function actingAsOwner(expectedGeneration = generation): boolean {
+    if (!branchConfigured()) return false;
     if (!generationOwnsLock(expectedGeneration)) return false;
     if (activatedGeneration !== expectedGeneration) {
       if (!releaseBranchLeases(expectedGeneration)) return false;
       if (!generationOwnsLock(expectedGeneration)) return false;
+      if (!activateEligibleRowsOwner(state, wakeGrantScript, process.pid, String(expectedGeneration))) return false;
+      if (!generationOwnsLock(expectedGeneration)) {
+        deactivateEligibleRowsOwner(state, wakeGrantScript, process.pid, String(expectedGeneration));
+        return false;
+      }
       markLoaded();
       activatedGeneration = expectedGeneration;
     }
@@ -342,27 +364,34 @@ export default function (pi: ExtensionAPI) {
   // Append-only merge into main. The store row is already durable when this
   // runs; the note is a cache of it at main's tail. Delivery modes per the
   // design: routine+idle appends now with no turn, routine+busy appends after
-  // the captain's next prompt, captain-relevant appends and triggers exactly
-  // one turn (queued as a follow-up while main is busy). The read cursor
-  // advances once the note is handed to Pi; a crash inside Pi's own delivery
-  // window leaves the outcome durable in the store, where main's
-  // fm_branch_outcomes tool still reads it on demand.
+  // the captain's next prompt, captain-relevant triggers exactly one turn
+  // (queued as a follow-up while main is busy) - that follow-up turn is
+  // itself the captain-visible outcome, so the captain-facing note is
+  // delivered silently (display: false) rather than printed or rendered a
+  // second time; routine notes stay rendered except an explicitly silent
+  // no-change heartbeat. The read cursor advances once the note is handed to
+  // Pi; a crash inside Pi's
+  // own delivery window leaves the outcome durable in the store, where
+  // main's fm_branch_outcomes tool still reads it on demand.
   function mergeIntoMain(
     expectedGeneration: number,
     seq: string,
     task: string,
     verdict: Verdict,
     summary: string,
+    silent: boolean,
   ): boolean {
     if (!actingAsOwner(expectedGeneration)) return false;
-    const note = `⎇ branch merged [${verdict}] ${task}: ${summary}`;
-    const message = { customType: "fm-branch-merge", content: note, display: true };
     if (verdict === "captain") {
+      const message = { customType: "fm-branch-merge", content: `${task}: ${summary}`, display: false };
       pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
-    } else if (mainStreaming) {
-      pi.sendMessage(message, { deliverAs: "nextTurn" });
     } else {
-      pi.sendMessage(message, {});
+      const message = { customType: "fm-branch-merge", content: `${MERGE_NOTE_BOAT} ${task}: ${summary}`, display: !(task === "fleet" && silent) };
+      if (mainStreaming) {
+        pi.sendMessage(message, { deliverAs: "nextTurn" });
+      } else {
+        pi.sendMessage(message, {});
+      }
     }
     if (/^[0-9]+$/.test(seq)) {
       if (!actingAsOwner(expectedGeneration)) return false;
@@ -376,7 +405,7 @@ export default function (pi: ExtensionAPI) {
       name: "fm_branch_report",
       label: "Report supervision outcome",
       description:
-        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge an append-only note into the captain-facing main conversation. verdict captain surfaces it to the captain in one turn; verdict routine merges silently.",
+        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge an append-only note into the captain-facing main conversation. verdict captain surfaces it to the captain in one turn; routine notes render unless silent marks a no-change heartbeat.",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
         verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {
@@ -387,13 +416,17 @@ export default function (pi: ExtensionAPI) {
             "One or two sentences in captain outcome language; include the full https:// PR URL when a PR is involved",
         }),
         wake: Type.Optional(Type.String({ description: "The wake reason line this outcome answers" })),
+        silent: Type.Optional(Type.Boolean({
+          description: "True only when a fleet-wide heartbeat review found literally nothing worth reporting; omit or use false whenever any action was taken or any routine result is worth a note",
+        })),
       }),
       execute: async (_toolCallId, params) => {
         const task = String((params as { task: unknown }).task || "").trim();
         const verdictRaw = String((params as { verdict: unknown }).verdict || "");
         const summary = String((params as { summary: unknown }).summary || "").trim();
         const wake = String((params as { wake?: unknown }).wake ?? "").trim();
-        if (!task || !summary || (verdictRaw !== "routine" && verdictRaw !== "captain")) {
+        const silent = (params as { silent?: unknown }).silent === true;
+        if (!task || !summary || (verdictRaw !== "routine" && verdictRaw !== "captain") || (silent && (task !== "fleet" || verdictRaw !== "routine"))) {
           return {
             content: [{ type: "text", text: "invalid report: task, verdict (routine|captain), and summary are required" }],
             details: undefined,
@@ -401,7 +434,7 @@ export default function (pi: ExtensionAPI) {
           };
         }
         const verdict = verdictRaw as Verdict;
-        const appendArgs = ["append", "--task", task, "--verdict", verdict, "--summary", summary];
+        const appendArgs = ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(silent)];
         if (wake) appendArgs.push("--wake", wake);
         if (!actingAsOwner(toolGeneration)) {
           return {
@@ -418,7 +451,7 @@ export default function (pi: ExtensionAPI) {
             isError: true,
           };
         }
-        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary)) {
+        if (!mergeIntoMain(toolGeneration, appended.stdout, task, verdict, summary, silent)) {
           return {
             content: [{ type: "text", text: `recorded seq ${appended.stdout}, but merge refused after supervision replacement or lock loss` }],
             details: undefined,
@@ -602,13 +635,46 @@ ${context.command}
         const session = await ensureBranch(acceptedGeneration);
         await flushMirror(session, acceptedGeneration);
         if (!actingAsOwner(acceptedGeneration)) throw new Error("supervision session no longer owns the fleet lock");
+        const heartbeat = /^heartbeat($|:)/.test(message);
+        const scope = scopeForUnreadWake(state, heartbeat);
+        // A newly-arrived main-owned (check-kind) row never bounces this
+        // whole recheck back to main any more - scopeForUnreadWake already
+        // excludes it from eligibleSeqs rather than vetoing the scan, so it
+        // stays queued for main while whatever else is eligible right now
+        // still reaches the branch. A genuinely empty queue, or a queue that
+        // simply has nothing (or nothing further) eligible for the branch
+        // right now, is an ordinary quiet no-op - not a fault, so it is
+        // never reported back to main. Only a scan scopeForUnreadWake itself
+        // marks corrupted (the queue or its metadata could not be read
+        // safely, or - for a heartbeat review - a main-owned row anywhere in
+        // the unread queue, since a heartbeat needs full-fleet context)
+        // still falls back to main.
+        if (scope.status === "empty" || (!scope.corrupted && scope.eligibleSeqs.length === 0)) return;
+        if (scope.corrupted) {
+          throw new Error("the unread wake queue could not be read safely");
+        }
+        if (!projectsAreGranted(scope.projects)) {
+          throw new Error("the unread wake rows no longer resolve to one granted project");
+        }
+        const grant = writeEligibleRowsSnapshot(
+          state,
+          scope.eligibleSeqs,
+          wakeGrantScript,
+          String(acceptedGeneration),
+        );
+        if (grant === "main-owned") throw new Error("the wake rows are already claimed by main");
+        if (grant !== "published") throw new Error("could not record the branch's eligible row snapshot");
+        // A row can still arrive between this re-check and the model starting
+        // the drain; that residual is accepted by the confused-agent-grade boundary.
         await session.prompt(
           `FIRSTMATE SUPERVISION WAKE: ${message}\n\nHandle this per your operating procedure and finish with fm_branch_report.`,
         );
+        if (!releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration))) {
+          throw new Error("could not release the branch's settled wake-row grant");
+        }
       })
       .catch(async (error: unknown) => {
-        // Return the wake to main rather than losing it; the durable wake
-        // queue additionally re-presents anything never acknowledged.
+        releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration));
         try {
           await fallbackToMain(message, error instanceof Error ? error.message : String(error));
         } catch {}
@@ -633,10 +699,10 @@ ${context.command}
   pi.events?.on?.(FM_BRANCH_DISPATCH_EVENT, (data) => {
     const offer = data as BranchDispatchOffer;
     if (!offer || typeof offer.accept !== "function") return;
-    // Check project-specific consent before ownership activation so an
-    // unconfigured or out-of-scope wake gets neither branch routing nor
-    // branch-owned state/lease cleanup side effects.
-    if (!offerIsGranted(offer)) return;
+    // Check eligibility before ownership activation so an out-of-scope wake
+    // gets neither branch routing nor branch-owned state/lease cleanup side
+    // effects.
+    if (!offerEligible(offer)) return;
     if (!actingAsOwner()) return; // cold start pre-lock, secondary session, or shutdown
     if (afkActive()) return; // the away daemon owns supervision while afk
     if (branchBroken) return; // fail back to today's wake-to-main path
@@ -679,10 +745,11 @@ ${context.command}
     shuttingDown = false;
     branchBroken = "";
     generation += 1;
-    if (branchConfigured()) actingAsOwner(generation);
+    actingAsOwner(generation);
   });
 
   pi.on?.("session_shutdown", () => {
+    deactivateEligibleRowsOwner(state, wakeGrantScript, process.pid, String(generation));
     shuttingDown = true;
     generation += 1;
     pendingMirror.length = 0;
@@ -698,6 +765,66 @@ ${context.command}
     }
   });
 
+  let calmPresentation: CalmPresentationState = {
+    active: false,
+    stockExportRendering: false,
+  };
+  pi.events?.on?.(FIRSTMATE_CALM_PRESENTATION_EVENT, (data) => {
+    const next = data as Partial<CalmPresentationState>;
+    calmPresentation = {
+      active: next.active === true,
+      stockExportRendering: next.stockExportRendering === true,
+    };
+  });
+  const calmHides = (itemClass: Parameters<typeof calmTranscriptClassIsVisible>[0]): boolean =>
+    calmPresentation.active &&
+    !calmPresentation.stockExportRendering &&
+    !calmTranscriptClassIsVisible(itemClass);
+
+  const outcomesToolAnsiPattern = new RegExp(
+    "(?:\\u001B\\][\\s\\S]*?(?:\\u0007|\\u001B\\u005C|\\u009C))|[\\u001B\\u009B][[\\]\\()#;?]*(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]",
+    "g",
+  );
+  const normalizeOutcomesToolOutput = (value: string): string => {
+    const withoutAnsi = value.includes("\u001B") || value.includes("\u009B")
+      ? value.replace(outcomesToolAnsiPattern, "")
+      : value;
+    return Array.from(withoutAnsi)
+      .filter((char) => {
+        const code = char.codePointAt(0);
+        if (code === undefined) return false;
+        if (code === 0x09 || code === 0x0a || code === 0x0d) return true;
+        if (code <= 0x1f) return false;
+        return code < 0xfff9 || code > 0xfffb;
+      })
+      .join("")
+      .replace(/\r/g, "");
+  };
+
+  type OutcomesToolShellState = {
+    shell?: Box;
+    call?: Text;
+    result?: Text | Container;
+  };
+  const refreshOutcomesToolShell = (
+    shellState: OutcomesToolShellState,
+    theme: Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
+    context: Parameters<NonNullable<ToolDefinition["renderCall"]>>[2],
+  ): Box => {
+    const background = context.isPartial
+      ? (text: string) => theme.bg("toolPendingBg", text)
+      : context.isError
+        ? (text: string) => theme.bg("toolErrorBg", text)
+        : (text: string) => theme.bg("toolSuccessBg", text);
+    const shell = shellState.shell ?? new Box(1, 1, background);
+    shellState.shell = shell;
+    shell.setBgFn(background);
+    shell.clear();
+    if (shellState.call) shell.addChild(shellState.call);
+    if (shellState.result) shell.addChild(shellState.result);
+    return shell;
+  };
+
   pi.registerTool?.({
     name: "fm_branch_outcomes",
     label: "Read supervision branch outcomes",
@@ -707,6 +834,30 @@ ${context.command}
     parameters: Type.Object({
       recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
     }),
+    renderShell: "self",
+    renderCall: (_args, theme, context) => {
+      if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
+      if (calmHides("assistant-tool-call")) return new Container();
+      const shellState = context.state as OutcomesToolShellState;
+      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_outcomes")), 0, 0);
+      return refreshOutcomesToolShell(shellState, theme, context);
+    },
+    renderResult: (result, _options, theme, context) => {
+      if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
+      if (calmHides("tool-result")) return new Container();
+      const output = result.content
+        .filter((item) => item.type === "text")
+        .map((item) => normalizeOutcomesToolOutput(item.text))
+        .join("\n");
+      const shellState = context.state as OutcomesToolShellState;
+      const renderedOutput = new Container();
+      for (const line of output.split("\n")) {
+        if (line || output) renderedOutput.addChild(new Text(theme.fg("toolOutput", line), 0, 0));
+      }
+      shellState.result = renderedOutput;
+      refreshOutcomesToolShell(shellState, theme, context);
+      return new Container();
+    },
     execute: async (_toolCallId, params) => {
       const recentRaw = (params as { recent?: unknown }).recent;
       const recent = typeof recentRaw === "number" && recentRaw >= 1 ? String(Math.floor(recentRaw)) : "20";
@@ -725,7 +876,18 @@ ${context.command}
     },
   });
 
+  // Pi only calls this renderer for a message with display: true, which
+  // mergeIntoMain sets for every routine note except an explicitly silent
+  // fleet heartbeat; captain-facing notes are never printed or rendered here.
   pi.registerMessageRenderer?.("fm-branch-merge", (message, _options, theme) => {
-    return new Text(theme.fg("customMessageText", textOfContent(message.content)), 0, 0);
+    const note = textOfContent(message.content);
+    const hasGlyph = note.startsWith(MERGE_NOTE_BOAT);
+    const rest = hasGlyph ? note.slice(MERGE_NOTE_BOAT.length) : note;
+    const outputPad = 1;
+    return new Text(
+      `${hasGlyph ? theme.fg("customMessageText", MERGE_NOTE_BOAT) : ""}${theme.fg("dim", rest)}`,
+      outputPad,
+      0,
+    );
   });
 }
