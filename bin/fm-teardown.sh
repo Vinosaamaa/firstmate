@@ -683,13 +683,6 @@ if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
   "$FM_ROOT/bin/fm-guard.sh" || true
 fi
 HOME_PATH=$(grep '^home=' "$META" | cut -d= -f2- || true)
-if [ "$KIND" = secondmate ] && [ -n "${FM_REMOTE_SECOND_MATE_HOME:-}" ]; then
-  if [ -n "$HOME_PATH" ] && [ "$HOME_PATH" != "$FM_REMOTE_SECOND_MATE_HOME" ]; then
-    echo "REFUSED: remote secondmate metadata home does not match its provisioned home" >&2
-    exit 1
-  fi
-  HOME_PATH=$FM_REMOTE_SECOND_MATE_HOME
-fi
 PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
 # (/tmp/fm-<id>/); absent for tasks spawned before that change, so tolerate empty.
@@ -703,6 +696,13 @@ ORCA_PATH_MATCH_VERIFIED=0
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
+if [ "$KIND" = secondmate ] && [ -n "${FM_REMOTE_SECOND_MATE_HOME:-}" ]; then
+  if [ -n "$HOME_PATH" ] && [ "$HOME_PATH" != "$FM_REMOTE_SECOND_MATE_HOME" ]; then
+    echo "REFUSED: remote secondmate metadata home does not match its provisioned home" >&2
+    exit 1
+  fi
+  HOME_PATH=$FM_REMOTE_SECOND_MATE_HOME
+fi
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
