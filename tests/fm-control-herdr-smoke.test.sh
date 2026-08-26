@@ -181,9 +181,15 @@ sleep 30
 SH
 chmod +x "$SCRATCH/fakebin/codex"
 
-herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
-  --agent fm-control-smoke-agent --session "$SESSION" >/dev/null 2>&1 \
-  || fail "could not release the synthetic agent before the Codex resume case"
+if ! herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
+  --agent fm-control-smoke-agent --session "$SESSION" >/dev/null 2>&1; then
+  STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
+  [ "$STATE" = dead ] \
+    || fail "could not release the synthetic agent before the Codex resume case (state: $STATE)"
+fi
+STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
+[ "$STATE" = dead ] \
+  || fail "the Codex resume case did not start from an agent-free pane (state: $STATE)"
 sed 's/^harness=claude$/harness=codex/' "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"
 printf 'spawn_gen=herdr-initial\n' >> "$HOME_DIR/state/hsmoke.meta.tmp"

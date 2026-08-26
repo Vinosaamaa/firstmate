@@ -114,6 +114,7 @@ case "${1:-}" in
   display-message)
     for a in "$@"; do
       case "$a" in
+        *pane_id*'|'*pane_tty*) printf '%%99|/dev/ttys999\n'; exit 0 ;;
         *cursor_y*) printf '1\n'; exit 0 ;;
         *pane_current_command*) cat "$D/command"; printf '\n'; exit 0 ;;
         *pane_current_path*)
@@ -151,6 +152,7 @@ new_case() {
   printf 'claude' > "$dir/fake/becomes"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   make_tmux_stub "$dir"
+  fm_fake_tmux_agent_ps "$dir/fakebin"
   printf '%s\n' "$dir"
 }
 
@@ -277,8 +279,8 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   expect_code 0 "$rc" "a same-harness relaunch should succeed"$'\n'"$out"
   assert_contains "$out" "relaunched" "the outcome should name the transition"
   assert_contains "$out" "(rl1) harness=claude from=claude" "the outcome should retain the task id beside its callsign"
-  [ "$(meta_field "$dir" rl1 window)" = "fmses:fm-rl1" ] \
-    || fail "the endpoint must be reused, not recreated"
+  [ "$(meta_field "$dir" rl1 window)" = "%99" ] \
+    || fail "the relaunch must preserve the same pane through its stable id"
   [ "$(meta_field "$dir" rl1 worktree)" = "$dir/wt" ] \
     || fail "the worktree must be reused, not reallocated"
   [ "$(meta_field "$dir" rl1 kind)" = ship ] || fail "kind must survive the relaunch"

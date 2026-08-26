@@ -116,7 +116,11 @@ fm_codex_session_meta_field() {  # <meta> <key>
 }
 
 fm_codex_session_file_mode() {  # <path>
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  if [ "$(uname)" = Darwin ]; then
+    stat -f '%Lp' "$1" 2>/dev/null
+  else
+    stat -c '%a' "$1" 2>/dev/null
+  fi
 }
 
 fm_codex_session_record_regular() {  # <record>

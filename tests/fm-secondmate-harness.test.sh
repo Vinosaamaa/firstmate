@@ -423,9 +423,18 @@ make_noop_tmux() {
   mkdir -p "$fakebin"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
+case "${1:-}" in
+  new-window) printf '%%99\n' ;;
+  display-message)
+    case "$*" in
+      *pane_id*'|'*pane_tty*) printf '%%99|/dev/ttys999\n' ;;
+    esac
+    ;;
+esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_tmux_agent_ps "$fakebin"
   printf '%s\n' "$fakebin"
 }
 

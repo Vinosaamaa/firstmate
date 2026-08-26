@@ -1111,6 +1111,18 @@ if [ "$RELAUNCH" -eq 0 ]; then
     # existing binding now and publish its replacement endpoint below.
     CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1) || exit 1
     IDENTITY_REBIND_ALLOWED=1
+  elif [ "$BACKEND" = herdr ] && [ "$KIND" != secondmate ] \
+    && [ -f "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ] \
+    && [ -f "$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")" ] \
+    && [ ! -L "$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")" ] \
+    && [ "$(fm_identity_record_value "$(fm_identity_task_record "$ID")" status 2>/dev/null || true)" = active ]; then
+    # A projected task whose exact journal, metadata, and active callsign all
+    # survive a Herdr restart is a continuation candidate, not a second fresh
+    # assignment. This only preserves the binding here: the journal recovery
+    # path below must still prove the old endpoint dead/agent-free before it
+    # may reclaim and rebind it, so a genuinely live duplicate still refuses.
+    CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+    IDENTITY_REBIND_ALLOWED=1
   else
     CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
     IDENTITY_FRESH_RESERVED=1
@@ -2418,6 +2430,8 @@ if [ "$BACKEND" = tmux ] && [ "$RELAUNCH" -eq 1 ]; then
   }
   TMUX_PANE_ID=$FM_BACKEND_TMUX_PANE_ID
   TMUX_PANE_TTY=$FM_BACKEND_TMUX_PANE_TTY
+  T=$TMUX_PANE_ID
+  WT_TARGET=$T
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
