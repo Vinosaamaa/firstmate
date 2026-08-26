@@ -69,6 +69,24 @@ test_failed_rename_never_delivers_task_input() {
   pass "Codex title adapter: failed naming does not race or duplicate the task prompt"
 }
 
+test_secondmate_role_title_uses_same_supported_rename_path() {
+  local first second
+  : > "$LOG"
+  printf '10\n' > "$READY_FILE"
+  FM_CODEX_TITLE_POLL_INTERVAL=0 FM_ROOT="$ROOT" \
+    fm_codex_title_deliver herdr 'fm-lab-safe:w1:p3' fm-sm Kepler IP '' \
+      launch-brief "$INPUT" secondmate \
+    || fail "secondmate Codex title delivery failed"
+  first=$(sed -n '1p' "$LOG")
+  second=$(sed -n '2p' "$LOG")
+  assert_contains "$first" $'/rename Kepler · IP · 2M' \
+    "secondmate did not use the role-aware conversation title"
+  assert_contains "$second" 'Continue the exact assigned task.' \
+    "secondmate task input was not delivered after naming"
+  pass "Codex title adapter: secondmates use the role-aware title on the supported rename path"
+}
+
 test_tmux_and_herdr_share_codex_contract
 test_failed_rename_never_delivers_task_input
+test_secondmate_role_title_uses_same_supported_rename_path
 echo "# all fm-codex-title tests passed"

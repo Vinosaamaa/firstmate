@@ -23,6 +23,9 @@
 # Only the pre-`# Task` header is read. Both absent is the legacy-compatible
 # state; partial, duplicate, or malformed metadata is corruption and is refused.
 # Runtime task metadata carries the same values as project_code= and task_label=.
+# A persistent secondmate uses the same field ordering with a role marker rather
+# than a routed task label: `<Callsign> · <ContextCode> · 2M`, falling back to
+# `<Callsign> · 2M` when no stable registered context code is available.
 
 fm_display_value_safe() {
   case "${1:-}" in
@@ -86,6 +89,63 @@ fm_display_title() {  # <callsign> <project-code> <task-label> [unicode|ascii] [
     keep=$((available - marker_len))
     printf '%s%s%s' "$prefix" "${label:0:$keep}" "$marker"
   fi
+}
+
+fm_display_secondmate_title() {  # <callsign> [context-code] [unicode|ascii]
+  local callsign=${1:-} code=${2:-} style=${3:-unicode} separator
+  fm_display_callsign_valid "$callsign" || return 1
+  [ -z "$code" ] || fm_display_project_code_valid "$code" || return 1
+  case "$style" in
+    unicode) separator=' · ' ;;
+    ascii) separator=' - ' ;;
+    *) return 1 ;;
+  esac
+  if [ -n "$code" ]; then
+    printf '%s%s%s%s2M' "$callsign" "$separator" "$code" "$separator"
+  else
+    printf '%s%s2M' "$callsign" "$separator"
+  fi
+}
+
+fm_display_workspace_context_code() {  # <registered-workspace-id>
+  local workspace=${1:-} part code='' first=1 LC_ALL=C
+  fm_display_value_safe "$workspace" || return 1
+  case "$workspace" in ''|-*|*-|*--*|*[!A-Za-z0-9-]*) return 1 ;; esac
+  while [ -n "$workspace" ]; do
+    part=${workspace%%-*}
+    [ -n "$part" ] || return 1
+    code=$code${part:0:1}
+    case "$workspace" in
+      *-*) workspace=${workspace#*-}; first=0 ;;
+      *) workspace= ;;
+    esac
+  done
+  [ "$first" -eq 0 ] || return 1
+  code=$(printf '%s' "$code" | tr '[:lower:]' '[:upper:]')
+  fm_display_project_code_valid "$code" || return 1
+  printf '%s' "$code"
+}
+
+fm_display_secondmate_metadata_read() {  # <meta>; sets FM_DISPLAY_CONTEXT_CODE
+  local meta=$1 count context_code
+  FM_DISPLAY_CONTEXT_CODE=
+  [ -f "$meta" ] && [ ! -L "$meta" ] || {
+    printf 'error: secondmate task metadata is missing or not a regular file: %s\n' "$meta" >&2
+    return 1
+  }
+  count=$(awk -F= '$1 == "context_code" { n++ } END { print n+0 }' "$meta") || return 1
+  [ "$count" -le 1 ] || {
+    printf 'error: secondmate task metadata has duplicate context_code= fields\n' >&2
+    return 1
+  }
+  [ "$count" -eq 1 ] || return 0
+  context_code=$(awk -F= '$1 == "context_code" { sub(/^[^=]*=/, ""); print; exit }' "$meta") || return 1
+  fm_display_project_code_valid "$context_code" || {
+    printf "error: invalid context_code '%s' in secondmate task metadata\n" "$context_code" >&2
+    return 1
+  }
+  # shellcheck disable=SC2034 # output global is consumed by the sourcing caller.
+  FM_DISPLAY_CONTEXT_CODE=$context_code
 }
 
 fm_display_brief_metadata_read() {  # <brief>; sets FM_DISPLAY_* globals

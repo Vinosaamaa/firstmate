@@ -45,10 +45,14 @@ fm_codex_title_submit() {  # <backend> <target> <text> [expected-label]
   }
 }
 
-fm_codex_title_deliver() {  # <backend> <target> <expected-label> <callsign> <project-code> <task-label> <launch-brief|resume-note> <input-file>
-  local backend=$1 target=$2 expected=$3 callsign=$4 code=$5 label=$6 input_kind=$7 input_file=$8
+fm_codex_title_deliver() {  # <backend> <target> <expected-label> <callsign> <context-code> <task-label> <launch-brief|resume-note> <input-file> [task|secondmate]
+  local backend=$1 target=$2 expected=$3 callsign=$4 code=$5 label=$6 input_kind=$7 input_file=$8 role=${9:-task}
   local title input opinput
-  title=$(fm_display_title "$callsign" "$code" "$label" unicode) || {
+  case "$role" in
+    task) title=$(fm_display_title "$callsign" "$code" "$label" unicode) ;;
+    secondmate) title=$(fm_display_secondmate_title "$callsign" "$code" unicode) ;;
+    *) return 1 ;;
+  esac || {
     printf 'error: refused malformed Codex display identity\n' >&2
     return 1
   }
