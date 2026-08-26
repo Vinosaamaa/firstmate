@@ -723,6 +723,10 @@ fm_identity_archive_task() {  # <meta> <task-id>
 
 fm_identity_display_callsign() {  # <task-id>
   local id=$1 record callsign
+  if ! fm_identity_task_id_valid "$id"; then
+    fm_identity_legacy_callsign "$id"
+    return
+  fi
   record=$(fm_identity_task_record "$id")
   if fm_identity_record_core_valid "$record" "$id" 2>/dev/null; then
     callsign=$(fm_identity_record_value "$record" callsign)

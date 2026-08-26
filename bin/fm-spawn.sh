@@ -1143,6 +1143,20 @@ if [ "$RELAUNCH" -eq 0 ]; then
         CALLSIGN=$(fm_identity_display_callsign "$ID") || exit 1
         IDENTITY_REBIND_ALLOWED=1
         ;;
+      unreadable)
+        # A legacy tmux identity probe may not be able to read the stable pane
+        # while the task's recorded trace carrier still proves this is a
+        # continuation of the same launch. Rebind that existing identity so
+        # trace-context relaunches preserve the callsign and carrier.
+        recovery_traceparent=$(fm_meta_get "$STATE/$ID.meta" traceparent 2>/dev/null || true)
+        if fm_trace_context_valid "$recovery_traceparent"; then
+          CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
+          IDENTITY_REBIND_ALLOWED=1
+        else
+          CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
+          IDENTITY_FRESH_RESERVED=1
+        fi
+        ;;
       *)
         CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
         IDENTITY_FRESH_RESERVED=1
