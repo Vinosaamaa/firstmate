@@ -307,6 +307,18 @@ META="$STATE/$ID.meta"
 if [ ! -f "$META" ]; then
   die "no active task for $CALLSIGN ($ID) in $STATE"
 fi
+# A failed exact-resume launch can leave replacement metadata that no longer
+# matches the parked binding. Check that durable non-retryable state before the
+# stricter endpoint validation below, so recovery reports the binding refusal
+# instead of masking it as malformed tmux metadata.
+JOURNAL="$STATE/$ID.control-relaunch"
+META_PRIOR="$JOURNAL.meta-prior"
+if [ "$RESUME_RELAUNCH" = 1 ] \
+  && { fm_codex_session_validate "$STATE" "$ID" "$META" uncertain 2>/dev/null \
+       || { [ -f "$META_PRIOR" ] \
+            && fm_codex_session_validate "$STATE" "$ID" "$META_PRIOR" uncertain 2>/dev/null; }; }; then
+  die "task $ID has an uncertain exact Codex resume binding from a prior launch; speculative retry is refused"
+fi
 # Herdr control is also the recovery boundary for pre-callsign Herdr tasks.
 # Allocate the persistent identity only after the lifecycle lock is held, while
 # preserving exact-id compatibility for ordinary legacy workers.
@@ -602,8 +614,6 @@ do_resumable_codex_exit() {
 # concrete, named partial state - never a task whose record claims an agent
 # that is not running.
 
-JOURNAL="$STATE/$ID.control-relaunch"
-META_PRIOR="$JOURNAL.meta-prior"
 BRIEF_PRIOR="$JOURNAL.brief-prior"
 NOTE_FILE="$JOURNAL.note"
 RELAUNCH_META_PUBLISHED=0

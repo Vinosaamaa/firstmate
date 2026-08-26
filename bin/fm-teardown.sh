@@ -258,6 +258,8 @@ META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
+[ -n "$KIND" ] || KIND=ship
 
 REMOTE_HANDOFF_DIR_PRESENT=0
 REMOTE_HANDOFF_DIR_REAL=
@@ -694,8 +696,6 @@ fi
 ORCA_WORKTREE_ID=$(fm_meta_get "$META" orca_worktree_id)
 ORCA_PATH_MATCH_VERIFIED=0
 
-KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
-[ -n "$KIND" ] || KIND=ship
 if [ "$KIND" = secondmate ] && [ -n "${FM_REMOTE_SECOND_MATE_HOME:-}" ]; then
   if [ -n "$HOME_PATH" ] && [ "$HOME_PATH" != "$FM_REMOTE_SECOND_MATE_HOME" ]; then
     echo "REFUSED: remote secondmate metadata home does not match its provisioned home" >&2

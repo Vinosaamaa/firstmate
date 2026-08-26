@@ -273,7 +273,7 @@ EOF
       --lock-pid "$lock_pid" --generation "$generation" \
       >/dev/null 2>&1 </dev/null &
     launcher_pid=$!
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
+    for _ in {1..200}; do
       if [ -s "$worker_pid_file" ]; then
         worker_pid=$(cat "$worker_pid_file" 2>/dev/null || true)
         break
