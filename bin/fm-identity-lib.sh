@@ -562,10 +562,10 @@ fm_identity_activate_reserved_task_from_meta() {  # <meta> <task-id>
 }
 
 fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
-  local meta=$1 id=$2 mode=${3:-0} legacy=0 rebinding=0 worktree_reclaim=0
+  local meta=$1 id=$2 mode=${3:-0} legacy=0 legacy_compat=0 rebinding=0 worktree_reclaim=0
   local record callsign status created retired old_worktree new_worktree target
   case "$mode" in
-    1|legacy) legacy=1 ;;
+    1|legacy) legacy=1; legacy_compat=1 ;;
     rebind) legacy=1; rebinding=1 ;;
     reclaim) legacy=1; rebinding=1; worktree_reclaim=1 ;;
   esac
@@ -582,11 +582,21 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
     callsign=$(fm_identity_record_value "$record" callsign)
     created=$(fm_identity_record_value "$record" created_at 2>/dev/null || fm_identity_now)
     if [ "$status" = archived ]; then
+      if [ "$legacy_compat" -eq 1 ]; then
+        fm_identity_lock_release
+        printf '%s' "$callsign"
+        return 0
+      fi
       fm_identity_lock_release
       fm_identity_error "task $id is archived as $callsign; refusing to reactivate a historical identity"
       return 1
     fi
     if [ "$status" = active ]; then
+      if [ "$legacy_compat" -eq 1 ]; then
+        fm_identity_lock_release
+        printf '%s' "$callsign"
+        return 0
+      fi
       old_worktree=$(fm_identity_record_value "$record" worktree 2>/dev/null || true)
       new_worktree=$(fm_identity_worktree_of_meta "$meta" 2>/dev/null || true)
       if [ -n "$old_worktree" ] && [ "$old_worktree" != "$new_worktree" ] \
@@ -687,6 +697,11 @@ fm_identity_archive_task() {  # <meta> <task-id>
   }
   callsign=$(fm_identity_record_value "$record" callsign)
   status=$(fm_identity_record_value "$record" status)
+  if [ "$status" = archived ]; then
+    fm_identity_lock_release
+    printf '%s' "$callsign"
+    return 0
+  fi
   if [ "$status" = active ] && ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
     fm_identity_lock_release
     fm_identity_error "task $id's callsign binding conflicts with its cleanup metadata; refusing historical rebinding"
@@ -785,12 +800,9 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
       return 2
     fi
     record=$(fm_identity_task_record "$id")
-    if [ -e "$record" ] || [ -L "$record" ]; then
-      fm_identity_exact_task_record_routes "$record" "$state/$id.meta" "$id" || {
-        fm_identity_error "task '$id' has conflicting or unsafe callsign identity; refusing to route"
-        return 2
-      }
-    fi
+    # Exact task ids are the pre-callsign compatibility route. A stale or
+    # archived callsign record must not shadow the canonical live metadata;
+    # callsign selectors below still require a fully exact active binding.
     printf '%s' "$id"
     return 0
   fi
@@ -803,12 +815,6 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
           return 2
         fi
         record=$(fm_identity_task_record "$id")
-        if [ -e "$record" ] || [ -L "$record" ]; then
-          fm_identity_exact_task_record_routes "$record" "$state/$id.meta" "$id" || {
-            fm_identity_error "task '$id' has conflicting or unsafe callsign identity; refusing to route"
-            return 2
-          }
-        fi
         printf '%s' "$id"
         return 0
       fi
