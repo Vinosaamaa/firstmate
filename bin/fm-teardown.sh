@@ -1980,7 +1980,7 @@ EOF
 }
 
 remove_firstmate_home() {
-  local home=$1 label=$2 expected_id=${3:-} abs_home_path process_event_backup
+  local home=$1 label=$2 expected_id=${3:-} abs_home_path process_event_backup remote_home_abs remote_target=0
   [ -n "$home" ] || return 0
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
@@ -1990,12 +1990,15 @@ remove_firstmate_home() {
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
     return 1
   fi
+  if [ -n "${FM_REMOTE_SECOND_MATE_HOME:-}" ]; then
+    remote_home_abs=$(removal_target_abs_path "$FM_REMOTE_SECOND_MATE_HOME" 2>/dev/null || true)
+    [ -n "$remote_home_abs" ] && [ "$abs_home_path" = "$remote_home_abs" ] && remote_target=1
+  fi
   # Remote secondmates are cloned homes owned by the remote retirement
   # control path, not treehouse leases in this code root. Keep that explicit
   # target on the guarded deletion path even if a remote checkout happens to
   # report a matching worktree slot.
-  if [ -z "${FM_REMOTE_SECOND_MATE_HOME:-}" ] \
-    && firstmate_home_has_treehouse_slot "$abs_home_path"; then
+  if [ "$remote_target" -eq 0 ] && firstmate_home_has_treehouse_slot "$abs_home_path"; then
     command -v treehouse >/dev/null 2>&1 || {
       echo "error: treehouse command not found; cannot return $label $abs_home_path" >&2
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
