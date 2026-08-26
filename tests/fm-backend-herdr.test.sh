@@ -2843,6 +2843,24 @@ test_normalize_key() {
   pass "fm_backend_herdr_normalize_key: Enter/Escape/C-c map to herdr's verified enter/escape/ctrl+c"
 }
 
+test_agent_rename_waits_for_registration_and_applies_callsign() {
+  local dir log resp fb
+  dir="$TMP_ROOT/agent-rename"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' '{"error":{"code":"agent_not_found","message":"agent target w1:p2 not found"}}' > "$resp/1.out"
+  printf '%s\n' '{"result":{"agent":{"agent":"codex","agent_status":"idle"}}}' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    FM_BACKEND_HERDR_AGENT_NAME_POLLS=2 FM_BACKEND_HERDR_AGENT_NAME_POLL_INTERVAL=0 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_rename default:w1:p2 Kepler' "$ROOT"
+  expect_code 0 $? "agent rename should succeed once the agent registers"
+  [ "$(grep -c $'\x1f''agent'$'\x1f''get'$'\x1f''w1:p2' "$log")" -eq 2 ] \
+    || fail "agent rename did not poll until the agent registered"
+  assert_contains "$(cat "$log")" \
+    "HERDR_SESSION=default"$'\x1f''agent'$'\x1f''rename'$'\x1f''w1:p2'$'\x1f''Kepler' \
+    "agent rename did not apply the assigned callsign to the exact pane"
+  pass "fm_backend_herdr_agent_rename: waits for registration and applies the callsign to the exact pane"
+}
+
 # --- capture / send_key / kill / current_path --------------------------------
 
 test_capture_calls_pane_read() {
@@ -4527,6 +4545,7 @@ test_workspace_find_matches_only_this_homes_own_label
 test_list_live_scoped_to_this_homes_workspace_only
 test_parse_target
 test_normalize_key
+test_agent_rename_waits_for_registration_and_applies_callsign
 test_capture_calls_pane_read
 test_capture_works_around_small_lines_bug
 test_capture_preserves_pane_read_failure

@@ -29,6 +29,30 @@ test_exact_formats_and_task_last_truncation() {
   pass "display title: canonical, fallback, and task-last truncation formats are exact"
 }
 
+test_secondmate_role_title_and_workspace_context() {
+  local title code
+  title=$(fm_display_secondmate_title Kepler IP unicode) \
+    || fail "secondmate ContextCode title did not render"
+  [ "$title" = 'Kepler · IP · 2M' ] \
+    || fail "secondmate ContextCode title changed: $title"
+  title=$(fm_display_secondmate_title Kepler '' unicode) \
+    || fail "secondmate fallback title did not render"
+  [ "$title" = 'Kepler · 2M' ] \
+    || fail "secondmate fallback title changed: $title"
+  title=$(fm_display_secondmate_title Kepler IP ascii) \
+    || fail "secondmate ASCII title did not render"
+  [ "$title" = 'Kepler - IP - 2M' ] \
+    || fail "secondmate ASCII title changed: $title"
+  code=$(fm_display_workspace_context_code interview-prep $'interview-prep\njob-journey') \
+    || fail "registered workspace id did not produce a ContextCode"
+  [ "$code" = IP ] || fail "workspace ContextCode changed: $code"
+  fm_display_workspace_context_code interviewprep $'interviewprep\njob-journey' >/dev/null 2>&1 \
+    && fail "an unstructured workspace id invented a ContextCode"
+  fm_display_workspace_context_code interview-prep $'interview-prep\nidentity-platform' >/dev/null 2>&1 \
+    && fail "colliding registered workspace ids produced an ambiguous ContextCode"
+  pass "display title: secondmates use stable role-aware context and fallback shapes"
+}
+
 test_validation_keeps_fields_explicit() {
   fm_display_project_code_valid MST || fail "valid registered acronym was refused"
   fm_display_project_code_valid IP || fail "valid two-character acronym was refused"
@@ -67,10 +91,17 @@ test_brief_and_meta_legacy_or_strict_pair() {
   out=$(fm_display_task_metadata_read "$meta" 2>&1) && fail "partial metadata was accepted"
   assert_contains "$out" 'exactly one project_code= and one task_label=' \
     "partial metadata refusal did not explain the paired contract"
+  printf '%s\n' 'kind=secondmate' 'context_code=IP' > "$meta"
+  fm_display_secondmate_metadata_read "$meta" || fail "valid secondmate ContextCode metadata was refused"
+  [ "$FM_DISPLAY_CONTEXT_CODE" = IP ] || fail "secondmate ContextCode metadata drifted"
+  printf '%s\n' 'kind=secondmate' > "$meta"
+  fm_display_secondmate_metadata_read "$meta" || fail "secondmate fallback metadata was refused"
+  [ -z "$FM_DISPLAY_CONTEXT_CODE" ] || fail "secondmate fallback metadata invented a ContextCode"
   pass "display metadata: legacy absence falls back while partial identity refuses"
 }
 
 test_exact_formats_and_task_last_truncation
+test_secondmate_role_title_and_workspace_context
 test_validation_keeps_fields_explicit
 test_brief_and_meta_legacy_or_strict_pair
 echo "# all fm-display-title tests passed"

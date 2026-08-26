@@ -343,6 +343,7 @@ case "${1:-}" in
     done
     if [ "${target#%}" != "$target" ]; then
       case "$format" in
+        *pane_id*'|'*pane_tty*) printf '%%1|/dev/ttys999\n' ;;
         *pane_current_path*) printf '%s\n' "$mate_home" ;;
         *pane_current_command*) printf '%s\n' node ;;
         *) printf '%s\n' "$target" ;;
@@ -394,7 +395,7 @@ case "${1:-}" in
   new-window)
     printf '%s\n' "$*" >> "$log"
     : > "$spawned"
-    printf '%%1\n'
+    printf '@spawnwid\n'
     exit 0
     ;;
   set-window-option|send-keys) exit 0 ;;
@@ -402,6 +403,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_tmux_agent_ps "$fakebin"
 }
 
 make_fake_herdr_secondmate_recovery() {
@@ -576,11 +578,12 @@ EOF
 }
 
 run_session_start_secondmate() {
-  local root=$1 home=$2 fakebin=$3 mate=$4 log=$5 spawned=$6 mode=$7
+  local root=$1 home=$2 fakebin=$3 mate=$4 log=$5 spawned=$6 mode=$7 harness_pid
+  harness_pid=$(sh -c 'printf "%s\n" "$PPID"')
   TMUX='' FM_BACKEND=tmux FM_FAKE_TMUX_MODE="$mode" FM_FAKE_TMUX_LOG="$log" \
     FM_FAKE_TMUX_SPAWNED="$spawned" FM_FAKE_SECOND_MATE_HOME="$mate" \
     FM_FAKE_SECOND_MATE_ID="$SESSION_START_SECOND_MATE_ID" \
-    FM_FAKE_HARNESS_PID=$$ \
+    FM_FAKE_HARNESS_PID="$harness_pid" \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH"
 }
 

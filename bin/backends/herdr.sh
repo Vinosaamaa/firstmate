@@ -14,8 +14,10 @@
 # Default container shape (D4, decided empirically - see
 # herdr-verification-p2.md "Task container shape", refined by
 # docs/herdr-backend.md "Default task container shape"): ONE herdr workspace PER
-# FIRSTMATE HOME (the primary, and each secondmate, gets its own), ONE herdr TAB
-# per task inside its home's workspace. The default-on presentation projection
+# FIRSTMATE HOME as the label fallback, ONE herdr TAB per task inside the
+# resolved workspace. A local secondmate launched from a Herdr primary stays in
+# that primary's exact workspace as a sibling tab while retaining its own home.
+# The default-on presentation projection
 # creates a disposable workspace for a clean fresh task instead unless the home
 # opts out. That
 # workspace is a non-authoritative visual projection containing only the normal
@@ -1729,16 +1731,16 @@ fm_backend_herdr_workspace_prune_seeded_default_tab() {  # <session> <workspace_
 # depth and because it is a no-op in the already-safe case.
 #
 # <launcher-relationship> (3rd arg, default "launcher-home") says whether the
-# container being ensured belongs to the SAME firstmate home as the process
-# calling this:
-#   launcher-home - a crewmate or scout for the caller's own home. When the
-#                   caller is itself running in a herdr pane, the worker MUST
-#                   land in that exact workspace
+# task should remain visible in the process calling this:
+#   launcher-home - a crewmate, scout, or local secondmate launched by a Herdr
+#                   primary. When the caller is itself running in a herdr pane,
+#                   the worker MUST land in that exact workspace
 #                   (fm_backend_herdr_launcher_identity), never in whichever
-#                   same-labeled workspace happens to sort first.
-#   other-home    - a --secondmate launch, which stands up a DIFFERENT home's
-#                   own per-home workspace by design. The launcher's workspace
-#                   is deliberately not inherited here.
+#                   same-labeled workspace happens to sort first. Without
+#                   Herdr launcher ancestry, the selected task home's label is
+#                   still the fallback container.
+#   other-home    - an explicitly detached different-home container. The
+#                   launcher's workspace is deliberately not inherited.
 # With no herdr ancestry at all there is no launcher workspace to inherit, so
 # the per-home label lookup below stays the resolver - but it must then resolve
 # to exactly ONE workspace. Two same-labeled home workspaces with no launcher
@@ -2623,6 +2625,30 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   local out
   out=$(fm_backend_herdr_cli "$1" agent get "$2" 2>/dev/null) || return 1
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
+}
+
+# Apply Firstmate's persistent callsign to Herdr's native friendly agent name.
+# The task tab keeps its internal fm-<id> label for recovery; supported harness
+# conversation titles own the richer terminal/tab presentation separately.
+# Codex callers prove composer readiness before this function; the short poll is
+# only a fallback for registration visibility lag and non-Codex harness startup.
+fm_backend_herdr_agent_rename() {  # <target> <callsign>
+  local target=$1 callsign=$2 polls=${FM_BACKEND_HERDR_AGENT_NAME_POLLS:-12}
+  local interval=${FM_BACKEND_HERDR_AGENT_NAME_POLL_INTERVAL:-0.5} i=0 identity
+  fm_backend_herdr_parse_target "$target" || return 1
+  while [ "$i" -lt "$polls" ]; do
+    identity=$(fm_backend_herdr_agent_identity_raw \
+      "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true)
+    if [ -n "${identity%%$'\t'*}" ]; then
+      fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent rename \
+        "$FM_BACKEND_HERDR_PANE" "$callsign" >/dev/null 2>&1
+      return $?
+    fi
+    i=$((i + 1))
+    [ "$i" -ge "$polls" ] || sleep "$interval"
+  done
+  echo "error: herdr did not expose an agent to name '$callsign' in pane $FM_BACKEND_HERDR_PANE" >&2
+  return 1
 }
 
 # fm_backend_herdr_composer_identity: the native agent identity/state probe

@@ -77,8 +77,10 @@
 #   identity that is unreadable, contradictory, stale, or from another herdr
 #   session stops the spawn before any worker endpoint exists. A launcher
 #   outside herdr has no workspace to inherit and uses this home's own labeled
-#   workspace, which must then match exactly one. --secondmate is the deliberate
-#   exception: it stands up that secondmate home's own workspace.
+#   workspace, which must then match exactly one. A local --secondmate launched
+#   by a Herdr primary shares that exact visible workspace as a new tab while
+#   retaining its separate home; without Herdr launcher ancestry it falls back
+#   to the secondmate home's labeled workspace.
 #   Herdr additionally uses a presentation-only layout by default when the
 #   selected client and running server meet the Herdr 0.8.0 floor. The local
 #   config/herdr-presentation-spaces file can say off to disable it or on to
@@ -1101,14 +1103,65 @@ SPAWN_TASK_LOCK_HELD=1
 CALLSIGN=
 IDENTITY_FRESH_RESERVED=0
 IDENTITY_REBIND_ALLOWED=0
+IDENTITY_RECLAIM_ALLOWED=0
 if [ "$RELAUNCH" -eq 0 ]; then
-  if [ "$KIND" = secondmate ] && [ -f "$STATE/$ID.meta" ]; then
+  if [ "$KIND" = secondmate ] \
+    && { [ -f "$STATE/$ID.meta" ] \
+      || [ "$(fm_identity_record_value "$(fm_identity_task_record "$ID")" status 2>/dev/null || true)" = active ]; }; then
     # Bootstrap's established secondmate recovery path predates --relaunch and
     # intentionally invokes an ordinary --secondmate spawn against the durable
     # task record. It is a continuation, not a fresh task: validate/adopt the
     # existing binding now and publish its replacement endpoint below.
-    CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1) || exit 1
+    CALLSIGN=$(fm_identity_display_callsign "$ID") || exit 1
     IDENTITY_REBIND_ALLOWED=1
+  elif [ "$BACKEND" = herdr ] && [ "$KIND" != secondmate ] \
+    && [ -f "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ] \
+    && [ -f "$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")" ] \
+    && [ ! -L "$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")" ] \
+    && [ "$(fm_identity_record_value "$(fm_identity_task_record "$ID")" status 2>/dev/null || true)" = active ]; then
+    # A projected task whose exact journal, metadata, and active callsign all
+    # survive a Herdr restart is a continuation candidate, not a second fresh
+    # assignment. This only preserves the binding here: the journal recovery
+    # path below must still prove the old endpoint dead/agent-free before it
+    # may reclaim and rebind it, so a genuinely live duplicate still refuses.
+    CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+    IDENTITY_REBIND_ALLOWED=1
+    IDENTITY_RECLAIM_ALLOWED=1
+  elif [ "$KIND" != secondmate ] && [ -f "$STATE/$ID.meta" ] \
+    && [ ! -L "$STATE/$ID.meta" ] \
+    && [ "$(fm_identity_record_value "$(fm_identity_task_record "$ID")" status 2>/dev/null || true)" = active ]; then
+    # A repeated ordinary spawn is a recovery continuation when the recorded
+    # endpoint is confidently dead or missing. Preserve its callsign and let
+    # the normal publication path rebind the replacement endpoint; live,
+    # ambiguous, and malformed records remain fresh-assignment refusals.
+    recovery_state=unreadable
+    if fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" 2>/dev/null; then
+      recovery_state=$(fm_backend_agent_state "$FM_BACKEND_VALIDATED_BACKEND" "$FM_BACKEND_VALIDATED_TARGET")
+    fi
+    case "$recovery_state" in
+      dead|missing)
+        CALLSIGN=$(fm_identity_display_callsign "$ID") || exit 1
+        IDENTITY_REBIND_ALLOWED=1
+        ;;
+      unreadable)
+        # A legacy tmux identity probe may not be able to read the stable pane
+        # while the task's recorded trace carrier still proves this is a
+        # continuation of the same launch. Rebind that existing identity so
+        # trace-context relaunches preserve the callsign and carrier.
+        recovery_traceparent=$(fm_meta_get "$STATE/$ID.meta" traceparent 2>/dev/null || true)
+        if fm_trace_context_valid "$recovery_traceparent"; then
+          CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
+          IDENTITY_REBIND_ALLOWED=1
+        else
+          CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
+          IDENTITY_FRESH_RESERVED=1
+        fi
+        ;;
+      *)
+        CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
+        IDENTITY_FRESH_RESERVED=1
+        ;;
+    esac
   else
     CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
     IDENTITY_FRESH_RESERVED=1
@@ -1877,6 +1930,10 @@ fi
 PROJECT_CODE=
 TASK_LABEL=
 DISPLAY_METADATA_STATE=absent
+DISPLAY_TITLE_STATE=absent
+DISPLAY_ROLE=task
+TITLE_CONTEXT_CODE=
+TITLE_TASK_LABEL=
 if [ "$RELAUNCH" -eq 1 ]; then
   fm_display_task_metadata_read "$RELAUNCH_META" || exit 1
   DISPLAY_METADATA_STATE=$FM_DISPLAY_METADATA_STATE
@@ -1887,6 +1944,71 @@ elif [ "$KIND" != secondmate ]; then
   DISPLAY_METADATA_STATE=$FM_DISPLAY_METADATA_STATE
   PROJECT_CODE=$FM_DISPLAY_PROJECT_CODE
   TASK_LABEL=$FM_DISPLAY_TASK_LABEL
+fi
+DISPLAY_TITLE_STATE=$DISPLAY_METADATA_STATE
+TITLE_CONTEXT_CODE=$PROJECT_CODE
+TITLE_TASK_LABEL=$TASK_LABEL
+
+secondmate_context_code() {  # <charter> <space-delimited-projects>
+  local charter=$1 projects=${2:-} workspace_count workspace workspace_ids project
+  workspace_count=$(awk '
+    /^# Workspace pointers$/ { in_section=1; next }
+    /^# / { in_section=0 }
+    in_section && /^- [^[:space:]]+$/ { n++; value=$2 }
+    END { print n+0 }
+  ' "$charter") || return 1
+  if [ "$workspace_count" -eq 1 ]; then
+    workspace=$(awk '
+      /^# Workspace pointers$/ { in_section=1; next }
+      /^# / { in_section=0 }
+      in_section && /^- [^[:space:]]+$/ { print $2; exit }
+    ' "$charter") || return 1
+    workspace_ids=$(FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" list 2>/dev/null | cut -f1) || return 2
+    if fm_display_workspace_context_code "$workspace" "$workspace_ids"; then
+      return 0
+    fi
+    echo "error: workspace '$workspace' has no unique derived ContextCode across the registered workspace ids" >&2
+    return 2
+  fi
+  # The registry owner returns one intentionally space-delimited project list.
+  # shellcheck disable=SC2086
+  set -- $projects
+  if [ "$#" -eq 1 ]; then
+    FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-project-mode.sh" --code "$1" 2>/dev/null
+    return $?
+  fi
+  if [ "$#" -eq 0 ] && grep -Fq 'This is a project-less domain: its subject is the firstmate repo' "$charter"; then
+    project=$(basename "$FM_ROOT")
+    FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-project-mode.sh" --code "$project" 2>/dev/null
+    return $?
+  fi
+  return 1
+}
+
+if [ "$KIND" = secondmate ] && [ "$BACKEND" = herdr ] \
+   && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
+  DISPLAY_ROLE=secondmate
+  DISPLAY_TITLE_STATE=present
+  SECONDMATE_CONTEXT_META=
+  if [ "$RELAUNCH" -eq 1 ]; then
+    SECONDMATE_CONTEXT_META=$RELAUNCH_META
+  elif [ -f "$STATE/$ID.meta" ]; then
+    SECONDMATE_CONTEXT_META=$STATE/$ID.meta
+  fi
+  if [ -n "$SECONDMATE_CONTEXT_META" ]; then
+    fm_display_secondmate_metadata_read "$SECONDMATE_CONTEXT_META" || exit 1
+    TITLE_CONTEXT_CODE=$FM_DISPLAY_CONTEXT_CODE
+  fi
+  if [ -z "$TITLE_CONTEXT_CODE" ]; then
+    if TITLE_CONTEXT_CODE=$(secondmate_context_code "$BRIEF" "${SECONDMATE_PROJECTS:-}"); then
+      :
+    else
+      SECONDMATE_CONTEXT_STATUS=$?
+      [ "$SECONDMATE_CONTEXT_STATUS" -ne 2 ] || exit 1
+      TITLE_CONTEXT_CODE=
+    fi
+  fi
+  TITLE_TASK_LABEL=
 fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
@@ -2121,7 +2243,7 @@ case "$BACKEND" in
     TMUX_PANE_ID=$FM_BACKEND_TMUX_PANE_ID
     TMUX_PANE_TTY=$FM_BACKEND_TMUX_PANE_TTY
     T=$TMUX_PANE_ID
-    WT_TARGET=$T
+    WT_TARGET=$WID
     ;;
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
@@ -2132,21 +2254,20 @@ case "$BACKEND" in
     # one case that does: it is the PRIMARY's own fm-spawn.sh process
     # launching a DIFFERENT home (PROJ_ABS, already validated above as the
     # secondmate's home), so FM_HOME here still names the primary. Shadow it
-    # to PROJ_ABS for just these two calls (bash restores it automatically
-    # after each prefixed simple-command call) so the secondmate's tab lands
-    # in the secondmate's own workspace, not the primary's "firstmate" one.
+    # to PROJ_ABS only for the per-home label fallback. When this process has a
+    # verified Herdr launcher pane, the secondmate instead opens as a new tab
+    # in that exact current workspace while its cwd and FM_HOME stay separate.
     #
     # Placement, separately from labeling: a crewmate/scout belongs in the
     # EXACT herdr workspace this launching process is itself running in, which
     # only its own herdr pane identity can name (a same-labeled sibling
-    # workspace must never be adopted). A --secondmate launch is the exception -
-    # it stands up a DIFFERENT home's own workspace by design - so it asks for
-    # the per-home container instead of inheriting this launcher's.
+    # workspace must never be adopted). A local --secondmate uses that same
+    # placement rule so it stays visible beside its Herdr primary; a launch
+    # from outside Herdr still falls back to the secondmate home's label.
     HERDR_LABEL_HOME=$FM_HOME
     HERDR_LAUNCHER_RELATIONSHIP=launcher-home
     if [ "$KIND" = secondmate ]; then
       HERDR_LABEL_HOME=$PROJ_ABS
-      HERDR_LAUNCHER_RELATIONSHIP=other-home
     fi
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
@@ -2348,6 +2469,8 @@ if [ "$BACKEND" = tmux ] && [ "$RELAUNCH" -eq 1 ]; then
   }
   TMUX_PANE_ID=$FM_BACKEND_TMUX_PANE_ID
   TMUX_PANE_TTY=$FM_BACKEND_TMUX_PANE_TTY
+  T=$TMUX_PANE_ID
+  WT_TARGET=$TMUX_PANE_ID
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
@@ -2893,7 +3016,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= -v tmux_keys="$TMUX_IDENTITY_META_KEYS" '
     BEGIN {
-      split("window endpoint_task_id worktree project workspace workspace_member project_code task_label harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project workspace workspace_member project_code task_label context_code harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
       split(tmux_keys, keys, " ")
       for (i in keys) owned[keys[i]] = 1
@@ -2911,6 +3034,9 @@ preserve_relaunch_meta() {
   if [ "$DISPLAY_METADATA_STATE" = present ]; then
     echo "project_code=$PROJECT_CODE"
     echo "task_label=$TASK_LABEL"
+  fi
+  if [ "$DISPLAY_ROLE" = secondmate ] && [ -n "$TITLE_CONTEXT_CODE" ]; then
+    echo "context_code=$TITLE_CONTEXT_CODE"
   fi
   echo "harness=$HARNESS"
   echo "kind=$KIND"
@@ -2970,13 +3096,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
 fi
-if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
-  CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
-elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
-  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
-else
-  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
-fi
 if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   # The record is published, so this task is now part of the set a teardown
   # enumerates and locks per task. The set lock is only needed across that
@@ -2999,9 +3118,11 @@ CODEX_DEFERRED_INPUT=0
 CODEX_INPUT_KIND=launch-brief
 CODEX_INPUT_FILE=$BRIEF_REAL
 CODEX_INPUT=
+CODEX_TITLE=
+CODEX_OPERATIONAL_INPUT=
 case "$LAUNCH" in
   *__CODEXINPUT__*)
-    if [ "$DISPLAY_METADATA_STATE" = present ]; then
+    if [ "$DISPLAY_TITLE_STATE" = present ]; then
       CODEX_DEFERRED_INPUT=1
       if [ "$RESUME_CODEX_SET" -eq 1 ]; then
         CODEX_INPUT_KIND=resume-note
@@ -3177,6 +3298,19 @@ spawn_quarantine_tmux_identity() {
   return "$status"
 }
 
+spawn_quarantine_herdr_secondmate() {
+  [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ] || return 1
+  fm_backend_herdr_kill "$T" >/dev/null 2>&1 || true
+  fm_backend_herdr_endpoint_confirmed_gone "$T"
+}
+
+spawn_harness_has_native_agent_identity() {
+  case "$1" in
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
@@ -3230,11 +3364,53 @@ if [ "$BACKEND" = tmux ]; then
     exit 1
   }
 fi
+if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
+  CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+elif [ "$IDENTITY_RECLAIM_ALLOWED" = 1 ]; then
+  # Projection recovery has already proved the exact old endpoint is a husk.
+  # A fresh Treehouse copy is therefore part of the same identity continuation,
+  # while every ordinary rebind still refuses a worktree change.
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" reclaim) || exit 1
+elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
+else
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+fi
 if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
-  if ! fm_codex_title_deliver \
-      "$BACKEND" "$T" "$W" "$CALLSIGN" "$PROJECT_CODE" "$TASK_LABEL" \
-      "$CODEX_INPUT_KIND" "$CODEX_INPUT_FILE"; then
+  CODEX_TITLE=$(fm_codex_title_build \
+    "$DISPLAY_ROLE" "$CALLSIGN" "$TITLE_CONTEXT_CODE" "$TITLE_TASK_LABEL") || exit 1
+  CODEX_OPERATIONAL_INPUT=$(fm_codex_operational_input_encode \
+    "$CODEX_INPUT_KIND" "$CODEX_INPUT_FILE") || exit 1
+  if ! fm_codex_title_wait_ready "$BACKEND" "$T" "$W"; then
     printf 'failed: Codex conversation naming or initial task delivery was not confirmed\n' >> "$STATE/$ID.status"
+    if [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ]; then
+      spawn_quarantine_herdr_secondmate || true
+    fi
+    echo "error: Codex readiness for conversation naming was not confirmed; inspect window $T" >&2
+    exit 1
+  fi
+fi
+# Raw test/escape-hatch commands have no Herdr agent identity to rename.
+if [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ] \
+   && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ] \
+   && spawn_harness_has_native_agent_identity "$HARNESS"; then
+  if ! fm_backend_herdr_agent_rename "$T" "$CALLSIGN"; then
+    printf 'failed: Herdr secondmate agent naming was not confirmed\n' >> "$STATE/$ID.status"
+    if spawn_quarantine_herdr_secondmate; then
+      echo "error: Herdr did not confirm callsign '$CALLSIGN' for secondmate $ID; the exact task pane was retired" >&2
+    else
+      echo "error: Herdr did not confirm callsign '$CALLSIGN' for secondmate $ID; exact task-pane cleanup is incomplete" >&2
+    fi
+    exit 1
+  fi
+fi
+if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
+  if ! fm_codex_title_deliver_ready \
+      "$BACKEND" "$T" "$W" "$CODEX_TITLE" "$CODEX_OPERATIONAL_INPUT"; then
+    printf 'failed: Codex conversation naming or initial task delivery was not confirmed\n' >> "$STATE/$ID.status"
+    if [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ]; then
+      spawn_quarantine_herdr_secondmate || true
+    fi
     echo "error: Codex conversation naming or initial task delivery was not confirmed; inspect window $T" >&2
     exit 1
   fi

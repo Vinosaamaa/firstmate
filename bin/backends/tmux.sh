@@ -67,6 +67,7 @@ fm_backend_tmux_process_sample() {  # <pid>
   case "$wanted" in ''|*[!0-9]*) return 1 ;; esac
   out=$(LC_ALL=C ps -p "$wanted" -o pid=,lstart=,tty=,comm= 2>/dev/null) || return 1
   out=${out#"${out%%[![:space:]]*}"}
+  # shellcheck disable=SC2086 # ps fields are intentionally split into positional fields.
   set -- $out
   [ "$#" -ge 8 ] || return 1
   pid=$1
@@ -396,15 +397,25 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # authoritative for the negative verdicts, since it is the only source that can
 # distinguish a truly idle pane from a rewritten process title.
 fm_backend_tmux_agent_state() {  # <target>
-  local target=$1 comm session window windows inventory_status observed
+  local target=$1 comm session window windows inventory_status observed observed_pane observed_tty
   local foreground argv0s name fg_seen=0 fg_shell=0 fg_other=0
   case "$target" in
     %*[0-9])
-      observed=$(tmux display-message -p -t "$target" '#{pane_id}' 2>/dev/null) || {
+      # Read the pane id together with its tty so this exact-target probe also
+      # works with tmux implementations that only expose a stable pane
+      # identity through a compound format. The first field remains the sole
+      # membership proof; a fallback active pane can never satisfy it.
+      observed=$(tmux display-message -p -t "$target" '#{pane_id}|#{pane_tty}' 2>/dev/null) || {
         printf 'missing'
         return 0
       }
-      [ "$observed" = "$target" ] || { printf 'unreadable'; return 0; }
+      observed_pane=${observed%%|*}
+      [ "$observed_pane" = "$target" ] || { printf 'unreadable'; return 0; }
+      observed_tty=${observed#*|}
+      case "$observed_tty" in
+        /dev/*) ;;
+        *) printf 'unreadable'; return 0 ;;
+      esac
       ;;
     *:*:*|'':*|*:'') printf 'unreadable'; return 0 ;;
     *:*) ;;

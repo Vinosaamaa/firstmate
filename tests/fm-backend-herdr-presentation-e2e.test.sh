@@ -383,8 +383,9 @@ make_project() {  # <dir>
 }
 
 spawn_task() {  # <id> <home> <project>
-  local id=$1 home=$2 project=$3
+  local id=$1 home=$2 project=$3 state=${4:-$2/state}
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr
 }
 
@@ -414,9 +415,9 @@ spawn_secondmate_task() {
 }
 
 teardown_task() {  # <id> <home>
-  local id=$1 home=$2
+  local id=$1 home=$2 state=${3:-$2/state}
   FM_GATE_REFUSE_BYPASS=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" \
     "$ROOT/bin/fm-teardown.sh" "$id" --force
 }
@@ -479,6 +480,7 @@ assert_no_projection_mutation_since() {  # <line-count> <case-name>
 }
 
 HOME_DIR="$TMP_ROOT/home"
+FLAT_SHAPE_HOME="$TMP_ROOT/flat-shape-home"
 PROJECT_DIR="$TMP_ROOT/project"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" \
   "$HOME_DIR/data/anchor" "$HOME_DIR/data/shape" \
@@ -487,12 +489,15 @@ mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" \
   "$HOME_DIR/data/wheelhouse-healing-r1"
 mkdir -p "$HOME_DIR/data/active-seeded" "$HOME_DIR/data/abort-a" "$HOME_DIR/data/abort-b" \
   "$HOME_DIR/data/lock-contended" "$HOME_DIR/data/default-on"
+mkdir -p "$FLAT_SHAPE_HOME/config" "$FLAT_SHAPE_HOME/data/shape"
 touch "$HOME_DIR/state/.last-watcher-beat"
 # Presentation spaces are on by default, so the flat baseline below opts out
 # explicitly; the projected cases each restate the setting they exercise.
 printf 'off\n' > "$HOME_DIR/config/herdr-presentation-spaces"
+printf 'off\n' > "$FLAT_SHAPE_HOME/config/herdr-presentation-spaces"
 printf 'Projection anchor fixture.\n' > "$HOME_DIR/data/anchor/brief.md"
 printf 'Projection E2E fixture.\n' > "$HOME_DIR/data/shape/brief.md"
+printf 'Projection E2E fixture.\n' > "$FLAT_SHAPE_HOME/data/shape/brief.md"
 printf 'Projection ordering fixture A.\n' > "$HOME_DIR/data/order-a/brief.md"
 printf 'Projection ordering fixture B.\n' > "$HOME_DIR/data/order-b/brief.md"
 printf 'Projection ordering failure fixture.\n' > "$HOME_DIR/data/order-fail/brief.md"
@@ -516,11 +521,14 @@ FIRSTMATE_WSID=$(grep '^herdr_workspace_id=' "$ANCHOR_META" | cut -d= -f2-)
 
 # The same task id and project run once opted out and once projected, so
 # Treehouse commands and metadata can be compared after normalizing endpoint
-# IDs and the deliberately fresh per-spawn incarnation.
+# IDs and the deliberately fresh per-spawn incarnation. The opted-out pass has
+# its own identity home while sharing this fixture's live state: teardown
+# archives a task identity by design, so the projected pass must allocate a
+# genuinely fresh binding instead of resurrecting the fixed task's tombstone.
 : > "$TREEHOUSE_CALL_LOG"
 OFF_HERDR_START=$(log_line_count)
 OFF_MOVE_START=$(wc -l < "$MOVE_CALL_LOG" | tr -d '[:space:]')
-spawn_task shape "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/off.out" 2> "$TMP_ROOT/off.err" \
+spawn_task shape "$FLAT_SHAPE_HOME" "$PROJECT_DIR" "$HOME_DIR/state" > "$TMP_ROOT/off.out" 2> "$TMP_ROOT/off.err" \
   || fail "opted-out spawn failed: $(cat "$TMP_ROOT/off.err")"
 OFF_HERDR_END=$(log_line_count)
 OFF_META="$TMP_ROOT/off.meta"
@@ -534,7 +542,7 @@ if printf '%s\n' "$OFF_HERDR_CALLS" | grep -E $'^(api\tschema|session\tlist)' >/
   fail "opted-out spawn added presentation-ordering capability or socket calls"
 fi
 pass "real Herdr lab: an opted-out spawn retains the Stage 1 Herdr command sequence with zero ordering calls"
-teardown_task shape "$HOME_DIR" > "$TMP_ROOT/off-teardown.out" 2> "$TMP_ROOT/off-teardown.err" \
+teardown_task shape "$FLAT_SHAPE_HOME" "$HOME_DIR/state" > "$TMP_ROOT/off-teardown.out" 2> "$TMP_ROOT/off-teardown.err" \
   || fail "opted-out teardown failed: $(cat "$TMP_ROOT/off-teardown.err")"
 
 # A home that configured nothing at all follows the version floor: it is

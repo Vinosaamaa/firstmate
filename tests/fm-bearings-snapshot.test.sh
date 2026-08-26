@@ -894,10 +894,10 @@ test_callsigns_accompany_live_results_and_history() {
     fm_identity_ensure_legacy_archive done-a
   ')
   json=$(run "$home" "$fakebin" --json --all-landed --all-reports)
-  printf '%s' "$json" | jq -e --arg done "$done_callsign" '
+  printf '%s' "$json" | jq -e --arg completed "$done_callsign" '
     (.in_flight | any(.[]; .id == "ship-task" and .callsign == "Mariner"))
       and (.reports | any(.[]; .id == "scout-x" and .callsign == "Pathfinder"))
-      and (.landed | any(.[]; .id == "done-a" and .callsign == $done))
+      and (.landed | any(.[]; .id == "done-a" and .callsign == $completed))
   ' >/dev/null || fail "Bearings omitted callsigns from live work, results, or landed history: $json"
   pass "Bearings shows callsigns beside task ids in live work, results, and history"
 }

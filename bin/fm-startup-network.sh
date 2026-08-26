@@ -243,20 +243,60 @@ EOF
   #     initialization behind the very work this stage exists to take off the
   #     blocking path.
   #   - nohup, so the worker outlives the shell that launched it.
-  #   - its OWN process group (monitor mode), because the caller runs inside the
-  #     digest's bounded child and that bound terminates its whole process group.
-  #     Sharing the group would kill the worker on a truncated startup and, worse,
-  #     orphan the bootstrap child it had already launched into a separate group -
-  #     leaving unbounded network work running with nothing left to bound it. Its
-  #     own group means a truncated digest leaves this stage running under its own
-  #     deadline, which is exactly the independence deferral is for.
-  local monitor_was_on=0
+  #   - its OWN process group, because the caller runs inside the digest's
+  #     bounded child and that bound terminates its whole process group.
+  #     Sharing the group would kill the worker on a truncated startup and,
+  #     worse, orphan the bootstrap child it had already launched into a
+  #     separate group. A tiny Perl launcher is used when available because it
+  #     can create that group portably even on hosts without setsid; the
+  #     monitor-mode fallback preserves the older shell-only behavior.
+  local monitor_was_on=0 launcher_pid worker_pid_file detach_program
   case $- in *m*) monitor_was_on=1 ;; esac
-  set -m 2>/dev/null || true
-  nohup "$SCRIPT_DIR/fm-startup-network.sh" run --locked "$locked" --lock-pid "$lock_pid" \
-    --generation "$generation" \
-    >/dev/null 2>&1 </dev/null &
-  worker_pid=$!
+  worker_pid_file="$STATE/.startup-network.worker.$generation.pid"
+  rm -f "$worker_pid_file" 2>/dev/null || true
+  worker_pid=
+  if command -v perl >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # Perl source is intentionally single-quoted.
+    detach_program='my $pid_file = shift @ARGV;
+      defined(my $pid = fork) or exit 125;
+      if ($pid == 0) {
+        defined(setpgrp(0, 0)) or exit 125;
+        exec @ARGV;
+        exit 125;
+      }
+      open(my $fh, ">", $pid_file) or exit 125;
+      print {$fh} "$pid\n";
+      close($fh) or exit 125;
+      exit 0;'
+    nohup perl -e "$detach_program" "$worker_pid_file" \
+      "$SCRIPT_DIR/fm-startup-network.sh" run --locked "$locked" \
+      --lock-pid "$lock_pid" --generation "$generation" \
+      >/dev/null 2>&1 </dev/null &
+    launcher_pid=$!
+    for _ in {1..200}; do
+      if [ -s "$worker_pid_file" ]; then
+        worker_pid=$(cat "$worker_pid_file" 2>/dev/null || true)
+        break
+      fi
+      kill -0 "$launcher_pid" 2>/dev/null || break
+      sleep 0.01
+    done
+    rm -f "$worker_pid_file" 2>/dev/null || true
+    case "$worker_pid" in
+      ''|*[!0-9]*)
+        kill "$launcher_pid" 2>/dev/null || true
+        fm_lock_release "$PUBLISH_LOCK"
+        [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
+        return 1
+        ;;
+    esac
+  else
+    set -m 2>/dev/null || true
+    nohup "$SCRIPT_DIR/fm-startup-network.sh" run --locked "$locked" --lock-pid "$lock_pid" \
+      --generation "$generation" \
+      >/dev/null 2>&1 </dev/null &
+    worker_pid=$!
+  fi
   if ! write_atomic "$STATUS_FILE" <<EOF
 state=running
 pid=$worker_pid

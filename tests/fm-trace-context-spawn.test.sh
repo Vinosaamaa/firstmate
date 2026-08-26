@@ -23,6 +23,15 @@ make_spawn_fakebin() {
 set -u
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_id}|#{pane_tty}"*)
+    if [ -n "${FM_FAKE_PRIOR_PANE_MISSING_ONCE:-}" ] \
+      && [ ! -e "$FM_FAKE_PRIOR_PANE_MISSING_ONCE" ]; then
+      : > "$FM_FAKE_PRIOR_PANE_MISSING_ONCE"
+      exit 1
+    fi
+    printf '%%99|/dev/ttys999\n'
+    exit 0
+    ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -30,7 +39,8 @@ case "${1:-}" in
     [ -z "${FM_FAKE_DUPLICATE_WINDOW:-}" ] || printf '%s\n' "$FM_FAKE_DUPLICATE_WINDOW"
     exit 0
     ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  new-window) printf '@spawnwid\n'; exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
   send-keys)
     if [ "${FM_FAKE_TRACEPARENT_SEND_FAIL:-0}" = 1 ]; then
       for a in "$@"; do
@@ -47,13 +57,18 @@ case "${1:-}" in
       done
     fi
     if [ "${FM_FAKE_TRACE_METADATA_APPEND_FAIL:-0}" = 1 ]; then
+      trace_export=
       for a in "$@"; do
         case "$a" in
           "export TRACEPARENT="*)
+            trace_export=1
             chmod a-w "$FM_FAKE_META_PATH"
             ;;
         esac
       done
+      # The optional trace append fails once, then the fixture restores the
+      # metadata before mandatory post-launch identity publication.
+      [ -n "$trace_export" ] || chmod u+w "$FM_FAKE_META_PATH"
     fi
     # Capture the text payload of both send forms: the literal launch
     # (`send-keys -t <target> -l <text>`) and a text line
@@ -78,6 +93,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_tmux_agent_ps "$fakebin"
   fm_fake_exit0 "$fakebin" treehouse
   printf '%s\n' "$fakebin"
 }
@@ -395,7 +411,8 @@ test_relaunch_reuses_recorded_carrier() {
   # Relaunch the same task: the recorded carrier must be reused verbatim for both
   # the meta and the injected export, so an observer keeps one identity across
   # restarts.
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
+  out=$(FM_FAKE_PRIOR_PANE_MISSING_ONCE="$HOME_DIR/prior-pane-missing" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "relaunch spawn should succeed"
   assert_contains "$out" "($CASE_ID)" "relaunch spawn should report success"
@@ -529,7 +546,8 @@ test_two_routed_tasks_through_one_secondmate_root_distinct_traces() {
 
   # Same environment, same task: a relaunch must reuse task A's recorded
   # carrier verbatim, so the per-task boundary never costs recovery identity.
-  out=$(TRACEPARENT="$sm_tp" run_spawn "$sm" "$wt_a" "$fakebin" "$log_a" "$id_a" "$proj_a")
+  out=$(TRACEPARENT="$sm_tp" FM_FAKE_PRIOR_PANE_MISSING_ONCE="$sm/prior-pane-missing" \
+    run_spawn "$sm" "$wt_a" "$fakebin" "$log_a" "$id_a" "$proj_a")
   status=$?
   expect_code 0 "$status" "routed task A relaunch should succeed"
   relaunch_tp=$(meta_traceparent "$sm/state/$id_a.meta")

@@ -187,6 +187,32 @@ SH
   chmod +x "$fakebin/$tool"
 }
 
+# fm_fake_tmux_agent_ps <fakebin>: add the stable process identity paired with
+# the conventional %99|/dev/ttys999 tmux fixture. Non-matching ps calls still
+# reach the host implementation so suites can combine this with other probes.
+fm_fake_tmux_agent_ps() {
+  local fakebin=$1
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *'-t ttys999 '*'-o pid=,pgid=,tpgid='*)
+    printf '424242 424242 424242\n'
+    ;;
+  *'-p 424242 '*'-o pid=,lstart=,tty=,comm='*)
+    printf '424242 Mon Jan 1 00:00:00 2026 ttys999 codex\n'
+    ;;
+  *'-p 424242 '*'-o args='*)
+    printf 'codex\n'
+    ;;
+  *)
+    exec /bin/ps "$@"
+    ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+}
+
 # --- deterministic git identity and fixtures --------------------------------
 
 # fm_git_identity [name] [email]: export a fixed author/committer identity so

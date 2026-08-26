@@ -258,6 +258,8 @@ META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
+[ -n "$KIND" ] || KIND=ship
 
 REMOTE_HANDOFF_DIR_PRESENT=0
 REMOTE_HANDOFF_DIR_REAL=
@@ -694,8 +696,13 @@ fi
 ORCA_WORKTREE_ID=$(fm_meta_get "$META" orca_worktree_id)
 ORCA_PATH_MATCH_VERIFIED=0
 
-KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
-[ -n "$KIND" ] || KIND=ship
+if [ "$KIND" = secondmate ] && [ -n "${FM_REMOTE_SECOND_MATE_HOME:-}" ]; then
+  if [ -n "$HOME_PATH" ] && [ "$HOME_PATH" != "$FM_REMOTE_SECOND_MATE_HOME" ]; then
+    echo "REFUSED: remote secondmate metadata home does not match its provisioned home" >&2
+    exit 1
+  fi
+  HOME_PATH=$FM_REMOTE_SECOND_MATE_HOME
+fi
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
@@ -1973,7 +1980,7 @@ EOF
 }
 
 remove_firstmate_home() {
-  local home=$1 label=$2 expected_id=${3:-} abs_home_path process_event_backup
+  local home=$1 label=$2 expected_id=${3:-} abs_home_path process_event_backup remote_home_abs remote_target=0
   [ -n "$home" ] || return 0
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
@@ -1983,7 +1990,15 @@ remove_firstmate_home() {
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
     return 1
   fi
-  if firstmate_home_has_treehouse_slot "$abs_home_path"; then
+  if [ -n "${FM_REMOTE_SECOND_MATE_HOME:-}" ]; then
+    remote_home_abs=$(removal_target_abs_path "$FM_REMOTE_SECOND_MATE_HOME" 2>/dev/null || true)
+    [ -n "$remote_home_abs" ] && [ "$abs_home_path" = "$remote_home_abs" ] && remote_target=1
+  fi
+  # Remote secondmates are cloned homes owned by the remote retirement
+  # control path, not treehouse leases in this code root. Keep that explicit
+  # target on the guarded deletion path even if a remote checkout happens to
+  # report a matching worktree slot.
+  if [ "$remote_target" -eq 0 ] && firstmate_home_has_treehouse_slot "$abs_home_path"; then
     command -v treehouse >/dev/null 2>&1 || {
       echo "error: treehouse command not found; cannot return $label $abs_home_path" >&2
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
@@ -2694,10 +2709,7 @@ fi
 # its endpoint. A malformed/conflicting identity therefore refuses while all
 # recoverable task state is still intact; final retirement below only flips
 # this already-validated binding to its historical tombstone.
-ARCHIVED_CALLSIGN=$(fm_identity_ensure_task_from_meta "$META" "$ID" 1) || {
-  echo "error: task $ID's persistent callsign could not be validated; nothing was changed" >&2
-  exit 1
-}
+ARCHIVED_CALLSIGN=$(fm_identity_display_callsign "$ID")
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -2844,10 +2856,16 @@ fm_codex_session_retire "$STATE" "$ID" || {
   echo "error: exact Codex session binding for $ID could not be retired safely; retaining task metadata" >&2
   exit 1
 }
-ARCHIVED_CALLSIGN=$(fm_identity_archive_task "$META" "$ID") || {
-  echo "error: task $ID cleanup reached record retirement, but its callsign history could not be archived; retaining task metadata for a safe retry" >&2
-  exit 1
-}
+# A remote host-local secondmate binding lives inside the cloned home that was
+# just removed. Its durable callsign history belongs to the parent route, so
+# recreating the retired remote home merely to archive this disposable copy
+# would reverse the teardown.
+if [ "$KIND" != secondmate ] || [ -z "${FM_REMOTE_SECOND_MATE_HOME:-}" ]; then
+  ARCHIVED_CALLSIGN=$(fm_identity_archive_task "$META" "$ID") || {
+    echo "error: task $ID cleanup reached record retirement, but its callsign history could not be archived; retaining task metadata for a safe retry" >&2
+    exit 1
+  }
+fi
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \

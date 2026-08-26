@@ -190,6 +190,16 @@ case "$RAW_ID" in
     fi
     ;;
 esac
+# A supervision lease is keyed by the exact task id, so check it before
+# selector resolution can reject an unregistered-but-live task id. Restrict
+# this early probe to canonical ids so arbitrary selector text never becomes a
+# filesystem path.
+# shellcheck source=bin/fm-lease-lib.sh
+. "$SCRIPT_DIR/fm-lease-lib.sh"
+if fm_task_id_creation_valid "$RAW_ID" \
+  && { [ -e "$STATE/.lease-$RAW_ID" ] || [ -L "$STATE/.lease-$RAW_ID" ]; }; then
+  fm_lease_guard "$RAW_ID" "lifecycle control (fm-control)"
+fi
 ID=$(fm_identity_resolve_selector "$STATE" "$RAW_ID") || exit 1
 CALLSIGN=$(fm_identity_display_callsign "$ID")
 
@@ -282,15 +292,11 @@ if ! fm_task_id_creation_valid "$ID"; then
   die "resolved task id '$ID' is invalid"
 fi
 if [ ! -f "$(fm_identity_task_record "$ID")" ]; then
-  fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1 >/dev/null \
-    || die "legacy task $ID could not receive a persistent callsign"
   CALLSIGN=$(fm_identity_display_callsign "$ID")
 fi
 # Supervision lease guard: lifecycle control is overlap territory between the
 # two Pi supervision actors; refuse while the OTHER actor holds this task's
 # live lease (contract: bin/fm-lease-lib.sh; no-op in homes without leases).
-# shellcheck source=bin/fm-lease-lib.sh
-. "$SCRIPT_DIR/fm-lease-lib.sh"
 fm_lease_guard "$ID" "lifecycle control (fm-control)"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 trap control_cleanup EXIT
@@ -300,6 +306,29 @@ CONTROL_LOCK_HELD=1
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ]; then
   die "no active task for $CALLSIGN ($ID) in $STATE"
+fi
+# A failed exact-resume launch can leave replacement metadata that no longer
+# matches the parked binding. Check that durable non-retryable state before the
+# stricter endpoint validation below, so recovery reports the binding refusal
+# instead of masking it as malformed tmux metadata.
+JOURNAL="$STATE/$ID.control-relaunch"
+META_PRIOR="$JOURNAL.meta-prior"
+if [ "$RESUME_RELAUNCH" = 1 ] \
+  && { fm_codex_session_validate "$STATE" "$ID" "$META" uncertain 2>/dev/null \
+       || { [ -f "$META_PRIOR" ] \
+            && fm_codex_session_validate "$STATE" "$ID" "$META_PRIOR" uncertain 2>/dev/null; }; }; then
+  die "task $ID has an uncertain exact Codex resume binding from a prior launch; speculative retry is refused"
+fi
+# Herdr control is also the recovery boundary for pre-callsign Herdr tasks.
+# Allocate the persistent identity only after the lifecycle lock is held, while
+# preserving exact-id compatibility for ordinary legacy workers.
+if [ ! -f "$(fm_identity_task_record "$ID")" ] \
+  && { [ "$(fm_meta_get "$META" backend)" = herdr ] \
+    || { [ "$RESUMABLE_EXIT" = 1 ] \
+      && [ "$(fm_meta_get "$META" harness)" = codex ] \
+      && [ "$(fm_meta_get "$META" kind)" = ship ]; }; }; then
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$META" "$ID" legacy) \
+    || die "could not publish the Herdr identity binding for task $ID"
 fi
 
 # A remotely placed secondmate records its endpoint on ANOTHER host, so every
@@ -568,8 +597,9 @@ do_resumable_codex_exit() {
     status=$?
   fi
   rm -f "$before" "$after"
-  [ "$status" -eq 0 ] && fm_codex_session_uuid_valid "$session" \
-    || die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  if [ "$status" -ne 0 ] || ! fm_codex_session_uuid_valid "$session"; then
+    die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  fi
   fm_codex_session_publish "$STATE" "$ID" "$META" "$session" parked \
     || die "task $ID stopped, but its exact Codex session $session could not be claimed without conflicting with another task or binding; no resumable binding was published"
   printf '%s session=%s' "$result" "$session"
@@ -584,8 +614,6 @@ do_resumable_codex_exit() {
 # concrete, named partial state - never a task whose record claims an agent
 # that is not running.
 
-JOURNAL="$STATE/$ID.control-relaunch"
-META_PRIOR="$JOURNAL.meta-prior"
 BRIEF_PRIOR="$JOURNAL.brief-prior"
 NOTE_FILE="$JOURNAL.note"
 RELAUNCH_META_PUBLISHED=0
@@ -913,7 +941,7 @@ record_note() {
 # launch bytes may have been sent, or the endpoint is not positively dead, the
 # binding becomes uncertain and no caller may speculate by launching it again.
 codex_resume_reconcile_prior_attempt() {
-  local session= binding_meta= attempt="$JOURNAL.resume-attempt" attempt_phase state
+  local session='' binding_meta='' attempt="$JOURNAL.resume-attempt" attempt_phase state
   if session=$(fm_codex_session_validate "$STATE" "$ID" "$META" resuming 2>/dev/null); then
     binding_meta=$META
   elif [ -f "$META_PRIOR" ] \
