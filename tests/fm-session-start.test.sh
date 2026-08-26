@@ -578,11 +578,12 @@ EOF
 }
 
 run_session_start_secondmate() {
-  local root=$1 home=$2 fakebin=$3 mate=$4 log=$5 spawned=$6 mode=$7
+  local root=$1 home=$2 fakebin=$3 mate=$4 log=$5 spawned=$6 mode=$7 harness_pid
+  harness_pid=$(sh -c 'printf "%s\n" "$PPID"')
   TMUX='' FM_BACKEND=tmux FM_FAKE_TMUX_MODE="$mode" FM_FAKE_TMUX_LOG="$log" \
     FM_FAKE_TMUX_SPAWNED="$spawned" FM_FAKE_SECOND_MATE_HOME="$mate" \
     FM_FAKE_SECOND_MATE_ID="$SESSION_START_SECOND_MATE_ID" \
-    FM_FAKE_HARNESS_PID=$$ \
+    FM_FAKE_HARNESS_PID="$harness_pid" \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH"
 }
 
