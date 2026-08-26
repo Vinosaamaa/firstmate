@@ -1990,7 +1990,12 @@ remove_firstmate_home() {
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
     return 1
   fi
-  if firstmate_home_has_treehouse_slot "$abs_home_path"; then
+  # Remote secondmates are cloned homes owned by the remote retirement
+  # control path, not treehouse leases in this code root. Keep that explicit
+  # target on the guarded deletion path even if a remote checkout happens to
+  # report a matching worktree slot.
+  if [ -z "${FM_REMOTE_SECOND_MATE_HOME:-}" ] \
+    && firstmate_home_has_treehouse_slot "$abs_home_path"; then
     command -v treehouse >/dev/null 2>&1 || {
       echo "error: treehouse command not found; cannot return $label $abs_home_path" >&2
       restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?

@@ -311,7 +311,10 @@ fi
 # Allocate the persistent identity only after the lifecycle lock is held, while
 # preserving exact-id compatibility for ordinary legacy workers.
 if [ ! -f "$(fm_identity_task_record "$ID")" ] \
-  && [ "$(fm_meta_get "$META" backend)" = herdr ]; then
+  && { [ "$(fm_meta_get "$META" backend)" = herdr ] \
+    || { [ "$RESUMABLE_EXIT" = 1 ] \
+      && [ "$(fm_meta_get "$META" harness)" = codex ] \
+      && [ "$(fm_meta_get "$META" kind)" = ship ]; }; }; then
   CALLSIGN=$(fm_identity_ensure_task_from_meta "$META" "$ID" legacy) \
     || die "could not publish the Herdr identity binding for task $ID"
 fi
