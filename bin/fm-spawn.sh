@@ -3059,6 +3059,18 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
 fi
+if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
+  CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+elif [ "$IDENTITY_RECLAIM_ALLOWED" = 1 ]; then
+  # Projection recovery has already proved the exact old endpoint is a husk.
+  # A fresh Treehouse copy is therefore part of the same identity continuation,
+  # while every ordinary rebind still refuses a worktree change.
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" reclaim) || exit 1
+elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
+else
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+fi
 if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   # The record is published, so this task is now part of the set a teardown
   # enumerates and locks per task. The set lock is only needed across that
@@ -3326,18 +3338,6 @@ if [ "$BACKEND" = tmux ]; then
     fi
     exit 1
   }
-fi
-if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
-  CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
-elif [ "$IDENTITY_RECLAIM_ALLOWED" = 1 ]; then
-  # Projection recovery has already proved the exact old endpoint is a husk.
-  # A fresh Treehouse copy is therefore part of the same identity continuation,
-  # while every ordinary rebind still refuses a worktree change.
-  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" reclaim) || exit 1
-elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
-  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
-else
-  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
 fi
 if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
   CODEX_TITLE=$(fm_codex_title_build \
