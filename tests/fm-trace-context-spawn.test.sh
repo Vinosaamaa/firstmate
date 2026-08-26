@@ -23,7 +23,15 @@ make_spawn_fakebin() {
 set -u
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-  *"#{pane_id}|#{pane_tty}"*) printf '%%99|/dev/ttys999\n'; exit 0 ;;
+  *"#{pane_id}|#{pane_tty}"*)
+    if [ -n "${FM_FAKE_PRIOR_PANE_MISSING_ONCE:-}" ] \
+      && [ ! -e "$FM_FAKE_PRIOR_PANE_MISSING_ONCE" ]; then
+      : > "$FM_FAKE_PRIOR_PANE_MISSING_ONCE"
+      exit 1
+    fi
+    printf '%%99|/dev/ttys999\n'
+    exit 0
+    ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -403,7 +411,8 @@ test_relaunch_reuses_recorded_carrier() {
   # Relaunch the same task: the recorded carrier must be reused verbatim for both
   # the meta and the injected export, so an observer keeps one identity across
   # restarts.
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
+  out=$(FM_FAKE_PRIOR_PANE_MISSING_ONCE="$HOME_DIR/prior-pane-missing" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
   status=$?
   expect_code 0 "$status" "relaunch spawn should succeed"
   assert_contains "$out" "($CASE_ID)" "relaunch spawn should report success"

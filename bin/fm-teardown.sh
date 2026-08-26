@@ -2856,10 +2856,16 @@ fm_codex_session_retire "$STATE" "$ID" || {
   echo "error: exact Codex session binding for $ID could not be retired safely; retaining task metadata" >&2
   exit 1
 }
-ARCHIVED_CALLSIGN=$(fm_identity_archive_task "$META" "$ID") || {
-  echo "error: task $ID cleanup reached record retirement, but its callsign history could not be archived; retaining task metadata for a safe retry" >&2
-  exit 1
-}
+# A remote host-local secondmate binding lives inside the cloned home that was
+# just removed. Its durable callsign history belongs to the parent route, so
+# recreating the retired remote home merely to archive this disposable copy
+# would reverse the teardown.
+if [ "$KIND" != secondmate ] || [ -z "${FM_REMOTE_SECOND_MATE_HOME:-}" ]; then
+  ARCHIVED_CALLSIGN=$(fm_identity_archive_task "$META" "$ID") || {
+    echo "error: task $ID cleanup reached record retirement, but its callsign history could not be archived; retaining task metadata for a safe retry" >&2
+    exit 1
+  }
+fi
 rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
