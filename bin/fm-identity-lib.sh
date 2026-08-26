@@ -433,7 +433,7 @@ fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
     fm_identity_error "shared backend endpoint validation is unavailable for task $id"
     return 1
   }
-  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1
+  fm_backend_validate_task_endpoint "$meta" "$id"
 }
 
 fm_identity_write_task_record() {  # <record> <id> <callsign> <status> <meta|empty> <created> [retired-file]
@@ -562,10 +562,10 @@ fm_identity_activate_reserved_task_from_meta() {  # <meta> <task-id>
 }
 
 fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
-  local meta=$1 id=$2 mode=${3:-0} legacy=0 legacy_compat=0 rebinding=0 worktree_reclaim=0
+  local meta=$1 id=$2 mode=${3:-0} legacy=0 rebinding=0 worktree_reclaim=0
   local record callsign status created retired old_worktree new_worktree target
   case "$mode" in
-    1|legacy) legacy=1; legacy_compat=1 ;;
+    1|legacy) legacy=1 ;;
     rebind) legacy=1; rebinding=1 ;;
     reclaim) legacy=1; rebinding=1; worktree_reclaim=1 ;;
   esac
@@ -582,21 +582,11 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
     callsign=$(fm_identity_record_value "$record" callsign)
     created=$(fm_identity_record_value "$record" created_at 2>/dev/null || fm_identity_now)
     if [ "$status" = archived ]; then
-      if [ "$legacy_compat" -eq 1 ]; then
-        fm_identity_lock_release
-        printf '%s' "$callsign"
-        return 0
-      fi
       fm_identity_lock_release
       fm_identity_error "task $id is archived as $callsign; refusing to reactivate a historical identity"
       return 1
     fi
     if [ "$status" = active ]; then
-      if [ "$legacy_compat" -eq 1 ]; then
-        fm_identity_lock_release
-        printf '%s' "$callsign"
-        return 0
-      fi
       old_worktree=$(fm_identity_record_value "$record" worktree 2>/dev/null || true)
       new_worktree=$(fm_identity_worktree_of_meta "$meta" 2>/dev/null || true)
       if [ -n "$old_worktree" ] && [ "$old_worktree" != "$new_worktree" ] \
@@ -659,6 +649,21 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
   printf '%s' "$callsign"
 }
 
+# Exact task-id operations predate persistent callsigns. Keep those operations
+# available when safe legacy metadata cannot be upgraded into a full identity
+# record, while still requiring the endpoint to belong to the requested task.
+# Callsign selectors and all rebinding paths continue to require an exact
+# published record through fm_identity_ensure_task_from_meta above.
+fm_identity_ensure_task_compatible() {  # <meta> <task-id>
+  local meta=$1 id=$2 callsign
+  if callsign=$(fm_identity_ensure_task_from_meta "$meta" "$id" legacy 2>/dev/null); then
+    printf '%s' "$callsign"
+    return 0
+  fi
+  fm_identity_validate_meta_endpoint_ownership "$meta" "$id" || return 1
+  fm_identity_display_callsign "$id"
+}
+
 fm_identity_ensure_legacy_archive() {  # <task-id>
   local id=$1 record callsign created
   record=$(fm_identity_task_record "$id")
@@ -686,9 +691,12 @@ fm_identity_ensure_legacy_archive() {  # <task-id>
 }
 
 fm_identity_archive_task() {  # <meta> <task-id>
-  local meta=$1 id=$2 record callsign created retired status
+  local meta=$1 id=$2 record callsign created retired status archive_meta
   record=$(fm_identity_task_record "$id")
-  [ -f "$record" ] || fm_identity_ensure_task_from_meta "$meta" "$id" 1 >/dev/null || return 1
+  if [ ! -f "$record" ]; then
+    fm_identity_ensure_legacy_archive "$id"
+    return
+  fi
   fm_identity_lock_acquire || return 1
   fm_identity_record_core_valid "$record" "$id" || {
     fm_identity_lock_release
@@ -702,15 +710,17 @@ fm_identity_archive_task() {  # <meta> <task-id>
     printf '%s' "$callsign"
     return 0
   fi
-  if [ "$status" = active ] && ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
-    fm_identity_lock_release
-    fm_identity_error "task $id's callsign binding conflicts with its cleanup metadata; refusing historical rebinding"
-    return 1
+  archive_meta=$meta
+  if [ "$status" != active ] \
+     || ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
+    # Archival is deliberately non-routable. Preserve the name history without
+    # copying a changed endpoint/worktree into the historical tombstone.
+    archive_meta=
   fi
   created=$(fm_identity_record_value "$record" created_at 2>/dev/null || fm_identity_now)
   retired=$(mktemp "${TMPDIR:-/tmp}/fm-identity-retired.XXXXXXXX") || { fm_identity_lock_release; return 1; }
   grep '^retired_callsign=' "$record" > "$retired" 2>/dev/null || true
-  fm_identity_write_task_record "$record" "$id" "$callsign" archived "$meta" "$created" "$retired" \
+  fm_identity_write_task_record "$record" "$id" "$callsign" archived "$archive_meta" "$created" "$retired" \
     || { rm -f "$retired"; fm_identity_lock_release; return 1; }
   rm -f "$retired"
   fm_identity_lock_release
@@ -800,9 +810,12 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
       return 2
     fi
     record=$(fm_identity_task_record "$id")
-    # Exact task ids are the pre-callsign compatibility route. A stale or
-    # archived callsign record must not shadow the canonical live metadata;
-    # callsign selectors below still require a fully exact active binding.
+    if [ -e "$record" ] || [ -L "$record" ]; then
+      fm_identity_exact_task_record_routes "$record" "$state/$id.meta" "$id" || {
+        fm_identity_error "task '$id' has conflicting or unsafe callsign identity; refusing to route"
+        return 2
+      }
+    fi
     printf '%s' "$id"
     return 0
   fi
@@ -815,6 +828,12 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
           return 2
         fi
         record=$(fm_identity_task_record "$id")
+        if [ -e "$record" ] || [ -L "$record" ]; then
+          fm_identity_exact_task_record_routes "$record" "$state/$id.meta" "$id" || {
+            fm_identity_error "task '$id' has conflicting or unsafe callsign identity; refusing to route"
+            return 2
+          }
+        fi
         printf '%s' "$id"
         return 0
       fi

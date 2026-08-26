@@ -340,7 +340,7 @@ fm_send_resolve_target() {  # <raw-target>
       identity_record=$(fm_identity_task_record "$id")
       identity_status=$(fm_identity_record_value "$identity_record" status 2>/dev/null || true)
       if [ "$identity_status" != active ]; then
-        fm_identity_ensure_task_from_meta "$meta" "$id" legacy >/dev/null || return 1
+        fm_identity_ensure_task_compatible "$meta" "$id" >/dev/null || return 1
       fi
       ;;
   esac

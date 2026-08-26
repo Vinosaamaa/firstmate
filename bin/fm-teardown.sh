@@ -2694,7 +2694,7 @@ fi
 # its endpoint. A malformed/conflicting identity therefore refuses while all
 # recoverable task state is still intact; final retirement below only flips
 # this already-validated binding to its historical tombstone.
-ARCHIVED_CALLSIGN=$(fm_identity_ensure_task_from_meta "$META" "$ID" 1) || {
+ARCHIVED_CALLSIGN=$(fm_identity_ensure_task_compatible "$META" "$ID") || {
   echo "error: task $ID's persistent callsign could not be validated; nothing was changed" >&2
   exit 1
 }
