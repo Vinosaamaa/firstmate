@@ -102,8 +102,10 @@ run_control() {
 # --- no registered agent: the endpoint exists but hosts no agent ------------
 
 OUT=$(run_control hsmoke exit) || fail "exit against an agent-free herdr pane should be idempotent success: $OUT"
+CALLSIGN=$(sed -n 's/^callsign=//p' "$HOME_DIR/data/crew-identities/hsmoke.identity")
+[ -n "$CALLSIGN" ] || fail "control did not allocate a persistent callsign for hsmoke"
 case "$OUT" in
-  "already-stopped hsmoke"*) : ;;
+  "already-stopped $CALLSIGN (hsmoke)"*) : ;;
   *) fail "an agent-free herdr pane should report already-stopped, got: $OUT" ;;
 esac
 pass "real herdr: exit on a pane with no registered agent is idempotent success"
@@ -128,7 +130,7 @@ STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
 
 OUT=$(run_control hsmoke interrupt) || fail "interrupt against a registered agent should succeed: $OUT"
 case "$OUT" in
-  *"interrupt-delivered hsmoke harness=claude backend=herdr verified=agent-alive cancel=unconfirmed"*) : ;;
+  *"interrupt-delivered $CALLSIGN (hsmoke) harness=claude backend=herdr verified=agent-alive cancel=unconfirmed"*) : ;;
   *) fail "interrupt should report the agent-alive proof on herdr, got: $OUT" ;;
 esac
 pass "real herdr: interrupt delivers the harness's key and proves the agent survived it"
@@ -211,7 +213,7 @@ fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" \
 OUT=$(run_control hsmoke relaunch --resume --note "continue after isolated Herdr restart") \
   || fail "exact Codex resume in the recorded Herdr endpoint should succeed: $OUT"
 case "$OUT" in
-  *"resumed hsmoke session=$CODEX_SESSION_ID"*"backend=herdr endpoint=$SESSION:$PANE_ID"*) : ;;
+  *"resumed $CALLSIGN (hsmoke) session=$CODEX_SESSION_ID"*"backend=herdr endpoint=$SESSION:$PANE_ID"*) : ;;
   *) fail "Herdr exact resume should report its session and exact endpoint, got: $OUT" ;;
 esac
 grep -F 'resume ' "$FAKE_CODEX_LOG" >/dev/null \

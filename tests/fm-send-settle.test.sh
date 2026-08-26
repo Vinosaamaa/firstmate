@@ -36,6 +36,9 @@ make_stubs() {  # <dir> -> echoes fakebin dir
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+case "$*" in
+  *'#{pane_id}|#{pane_tty}'*) printf '%%99|/dev/ttys999\n'; exit 0 ;;
+esac
 case "${1:-}" in
   send-keys) exit 0 ;;
   display-message)
@@ -47,6 +50,7 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  fm_fake_tmux_agent_ps "$fb"
   cat > "$fb/sleep" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "${1:-}" >> "$FM_SLEEP_LOG"
@@ -125,7 +129,12 @@ test_claude_escape_records_interrupt_idle() {
   fb=$(make_stubs "$dir"); log="$dir/sleep.log"
   home="$dir/home"; mkdir -p "$home/state"
   fm_write_meta "$home/state/task.meta" \
-    "window=sess:win" "worktree=$home/wt" "project=$home/project" \
+    "window=%99" "endpoint_task_id=task" \
+    "worktree=$home/wt" "project=$home/project" \
+    "tmux_pane_id=%99" "tmux_pane_tty=/dev/ttys999" \
+    "tmux_identity_status=bound" "tmux_agent_pid=424242" \
+    "tmux_agent_start=Mon Jan 1 00:00:00 2026" \
+    "tmux_agent_comm=codex" "tmux_agent_argv0=codex" \
     "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
   gen=$("$ROOT/bin/fm-busy-event.sh" arm "$home/state" task)
   printf 'busy_gen=%s\n' "$gen" >> "$home/state/task.meta"
