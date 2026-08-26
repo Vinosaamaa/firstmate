@@ -42,8 +42,9 @@ FM_IDENTITY_DIR="$FM_IDENTITY_DATA/crew-identities"
 FM_IDENTITY_HOME_RECORD="$FM_IDENTITY_DATA/firstmate.identity"
 FM_IDENTITY_LOCK="$FM_IDENTITY_DATA/.identity.lock"
 
-FM_IDENTITY_CALLSIGN_POOL="Ada Bell Burnell Carson Curie Darwin Edison Euler Faraday Franklin Galileo Hamilton Hedy Hopper Joule Kepler Lamarr Lovelace Maxwell Mendeleev Newton Noether Pascal Raman Sagan Tesla Turing Verne Watt Wilkins"
-FM_IDENTITY_HOME_POOL="Aurora Beagle Calypso Discovery Endeavour Horizon Intrepid Nautilus Odyssey Polaris Resolute Venture Voyager"
+FM_IDENTITY_HOME_POOL="Rayleigh Beckman Zoro Killer Marco King Shiryu Lafitte Daz Gin Mohji Cabaji Jango Pearl Sarquiss"
+FM_IDENTITY_SECOND_MATE_POOL="Jinbei Katakuri Sabo Law Vivi Yamato Hancock Mihawk Crocodile Dragon Shanks Kuma Ace Smoker Fujitora Garp Sengoku Tsuru Kuzan Kizaru Ryokugyu Magellan Hannyabal Kyros Neptune Momonosuke Kinemon Denjiro Inuarashi Nekomamushi Bonney Urouge Capone Hawkins Drake Apoo"
+FM_IDENTITY_CREWMATE_POOL="Franky Robin Nami Sanji Usopp Brook Chopper Koby Tashigi Perona Reiju Pudding Carrot Bepo Penguin Shachi Heat Wire Bartolomeo Cavendish Rebecca Viola Leo Sai Ideo Hajrudin Orlumbus Chinjao Bellamy BonClay Galdino Baby5 Koala Hack Inazuma Karasu Lindbergh Morley BeloBetty Helmeppo Hina Fullbody Sentomaru Momonga Doberman Onigumo Bastille Bogard Raizo Kikunojo Ashura Kawamatsu Izo Shinobu Tama Toko Hiyori Mansherry Dellinger SenorPink Pica Diamante Trebol Sugar Ichiji Niji Yonji Pekoms Tamago Chiffon Lola Praline Brulee Cracker Smoothie Oven Daifuku Perospero Nojiko Genzo Zeff Patty Carne Kaya Merry Makino Laboon Crocus Dorry Brogy Dalton Kureha GanFall Conis Wyper Aisa Paulie Iceburg Kokoro Chimney Camie Hachi Duval Shirahoshi Fukaboshi Ryuboshi Manboshi Otohime Aladine Shaka Lilith Pythagoras Atlas York"
 
 fm_identity_error() {
   printf 'error: %s\n' "$*" >&2
@@ -62,7 +63,7 @@ fm_identity_home_path() {
 }
 
 fm_identity_fold() {
-  local value=$1 folded= char i LC_ALL=C
+  local value=$1 folded='' char i LC_ALL=C
   for ((i = 0; i < ${#value}; i++)); do
     char=${value:i:1}
     case "$char" in
@@ -91,7 +92,7 @@ fm_identity_name_valid() {  # <name>
     [A-Za-z]* ) ;;
     *) return 1 ;;
   esac
-  case "$name" in *[!A-Za-z0-9-]*|*-|*--) return 1 ;; esac
+  case "$name" in *[!A-Za-z0-9-]*|*-) return 1 ;; esac
 }
 
 fm_identity_task_id_valid() {  # <task-id>
@@ -104,7 +105,7 @@ fm_identity_name_reserved() {  # <name>
   local folded
   folded=$(fm_identity_fold "$1")
   case "$folded" in
-    captain|firstmate|first-mate|mate|crew|crewmate|secondmate|second-mate|scout|ship|default|unknown|unnamed|archived|active|provisioning|fm-*) return 0 ;;
+    luffy|roger|captain|firstmate|first-mate|mate|crew|crewmate|secondmate|second-mate|scout|ship|default|unknown|unnamed|archived|active|provisioning|fm-*) return 0 ;;
   esac
   return 1
 }
@@ -122,7 +123,7 @@ fm_identity_validate_name() {  # <name>
 }
 
 fm_identity_record_value() {  # <record> <key>
-  local record=$1 key=$2 count=0 value= line
+  local record=$1 key=$2 count=0 value='' line
   [ -f "$record" ] && [ ! -L "$record" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
@@ -195,11 +196,13 @@ fm_identity_pool_size() {  # <space-delimited-pool>
 fm_identity_all_names() {
   local record
   if [ -f "$FM_IDENTITY_HOME_RECORD" ] && [ ! -L "$FM_IDENTITY_HOME_RECORD" ]; then
-    sed -n -e 's/^name=//p' -e 's/^previous_name=//p' "$FM_IDENTITY_HOME_RECORD"
+    sed -n -e 's/^name=//p' "$FM_IDENTITY_HOME_RECORD"
   fi
   for record in "$FM_IDENTITY_DIR"/*.identity; do
     [ -f "$record" ] && [ ! -L "$record" ] || continue
-    sed -n -e 's/^callsign=//p' -e 's/^retired_callsign=//p' "$record"
+    case "$(fm_identity_record_value "$record" status)" in
+      active|provisioning) fm_identity_record_value "$record" callsign ;;
+    esac
   done
 }
 
@@ -208,17 +211,18 @@ fm_identity_human_name_matches_any() {  # <name> [record-to-ignore]
   wanted=$(fm_identity_fold "$1")
   if [ "$FM_IDENTITY_HOME_RECORD" != "$ignore" ] && [ -f "$FM_IDENTITY_HOME_RECORD" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in name=*|previous_name=*) value=${line#*=} ;; *) continue ;; esac
+      case "$line" in name=*) value=${line#*=} ;; *) continue ;; esac
       [ "$(fm_identity_fold "$value")" = "$wanted" ] && return 0
     done < "$FM_IDENTITY_HOME_RECORD"
   fi
   for record in "$FM_IDENTITY_DIR"/*.identity; do
     [ -f "$record" ] && [ ! -L "$record" ] || continue
     [ "$record" = "$ignore" ] && continue
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in callsign=*|retired_callsign=*) value=${line#*=} ;; *) continue ;; esac
-      [ "$(fm_identity_fold "$value")" = "$wanted" ] && return 0
-    done < "$record"
+    case "$(fm_identity_record_value "$record" status)" in
+      active|provisioning) value=$(fm_identity_record_value "$record" callsign) ;;
+      *) continue ;;
+    esac
+    [ "$(fm_identity_fold "$value")" = "$wanted" ] && return 0
   done
   return 1
 }
@@ -227,14 +231,28 @@ fm_identity_name_matches_any() {  # <name> [record-to-ignore]
   local wanted ignore=${2:-} id_path id
   wanted=$(fm_identity_fold "$1")
   fm_identity_human_name_matches_any "$1" "$ignore" && return 0
-  for id_path in "$FM_IDENTITY_DIR"/*.identity "$FM_IDENTITY_STATE"/*.meta; do
-    [ -e "$id_path" ] || continue
-    id=${id_path##*/}
-    id=${id%.identity}
-    id=${id%.meta}
+  for id_path in "$FM_IDENTITY_DIR"/*.identity; do
+    [ -f "$id_path" ] && [ ! -L "$id_path" ] || continue
+    [ "$(fm_identity_record_value "$id_path" status)" = active ] \
+      || [ "$(fm_identity_record_value "$id_path" status)" = provisioning ] || continue
+    id=${id_path##*/}; id=${id%.identity}
+    [ "$id_path" = "$ignore" ] && continue
+    [ "$(fm_identity_fold "$id")" = "$wanted" ] && return 0
+  done
+  for id_path in "$FM_IDENTITY_STATE"/*.meta; do
+    [ -f "$id_path" ] && [ ! -L "$id_path" ] || continue
+    id=${id_path##*/}; id=${id%.meta}
     [ "$(fm_identity_fold "$id")" = "$wanted" ] && return 0
   done
   return 1
+}
+
+fm_identity_pool_for_kind() {  # <firstmate|secondmate|ship|scout>
+  case "${1:-ship}" in
+    firstmate|home|firstmate-home) printf '%s' "$FM_IDENTITY_HOME_POOL" ;;
+    secondmate) printf '%s' "$FM_IDENTITY_SECOND_MATE_POOL" ;;
+    *) printf '%s' "$FM_IDENTITY_CREWMATE_POOL" ;;
+  esac
 }
 
 fm_identity_choose_home_name() {
@@ -251,16 +269,17 @@ fm_identity_choose_home_name() {
   printf '%s' "$name"
 }
 
-fm_identity_choose_fresh_callsign() {  # <task-id>
-  local id=$1 home checksum size start offset index candidate suffix=2
+fm_identity_choose_fresh_callsign() {  # <task-id> [kind]
+  local id=$1 kind=${2:-ship} home checksum size start offset index candidate suffix=2 pool
   home=$(fm_identity_home_path) || return 1
   checksum=$(fm_identity_checksum "$home:$id") || return 1
-  size=$(fm_identity_pool_size "$FM_IDENTITY_CALLSIGN_POOL")
+  pool=$(fm_identity_pool_for_kind "$kind")
+  size=$(fm_identity_pool_size "$pool")
   start=$((checksum % size))
   offset=0
   while [ "$offset" -lt "$size" ]; do
     index=$(((start + offset) % size))
-    candidate=$(fm_identity_pool_at "$FM_IDENTITY_CALLSIGN_POOL" "$index") || return 1
+    candidate=$(fm_identity_pool_at "$pool" "$index") || return 1
     if [ "$(fm_identity_fold "$candidate")" != "$(fm_identity_fold "$id")" ] \
        && ! fm_identity_name_matches_any "$candidate"; then
       printf '%s' "$candidate"
@@ -268,7 +287,7 @@ fm_identity_choose_fresh_callsign() {  # <task-id>
     fi
     offset=$((offset + 1))
   done
-  candidate=$(fm_identity_pool_at "$FM_IDENTITY_CALLSIGN_POOL" "$start") || return 1
+  candidate=$(fm_identity_pool_at "$pool" "$start") || return 1
   while [ "$(fm_identity_fold "$candidate-$suffix")" = "$(fm_identity_fold "$id")" ] \
      || fm_identity_name_matches_any "$candidate-$suffix"; do
     suffix=$((suffix + 1))
@@ -276,12 +295,13 @@ fm_identity_choose_fresh_callsign() {  # <task-id>
   printf '%s-%s' "$candidate" "$suffix"
 }
 
-fm_identity_legacy_callsign() {  # <task-id>, deterministic read-only fallback
-  local id=$1 home checksum size base tag
+fm_identity_legacy_callsign() {  # <task-id> [kind], deterministic read-only fallback
+  local id=$1 kind=${2:-ship} home checksum size base tag pool
   home=$(fm_identity_home_path 2>/dev/null || printf '%s' "$FM_IDENTITY_HOME")
   checksum=$(fm_identity_checksum "$home:$id:legacy") || return 1
-  size=$(fm_identity_pool_size "$FM_IDENTITY_CALLSIGN_POOL")
-  base=$(fm_identity_pool_at "$FM_IDENTITY_CALLSIGN_POOL" "$((checksum % size))") || return 1
+  pool=$(fm_identity_pool_for_kind "$kind")
+  size=$(fm_identity_pool_size "$pool")
+  base=$(fm_identity_pool_at "$pool" "$((checksum % size))") || return 1
   tag=$((checksum % 100000))
   if [ "$(fm_identity_fold "$base-L$tag")" = "$(fm_identity_fold "$id")" ]; then
     tag="${tag}1"
@@ -438,7 +458,7 @@ fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
 
 fm_identity_write_task_record() {  # <record> <id> <callsign> <status> <meta|empty> <created> [retired-file]
   local record=$1 id=$2 callsign=$3 status=$4 meta=$5 created=$6 retired_file=${7:-}
-  local home worktree= backend= endpoint= endpoint_session= harness_session= spawn_gen= value tmp
+  local home worktree='' backend='' endpoint='' endpoint_session='' harness_session='' spawn_gen='' value tmp
   fm_identity_task_id_valid "$id" && fm_identity_validate_name "$callsign" >/dev/null 2>&1 || return 1
   home=$(fm_identity_home_path) || return 1
   if [ -n "$meta" ]; then
@@ -491,8 +511,8 @@ fm_identity_record_core_valid() {  # <record> <id>
     && case "$status" in provisioning|active|archived) true ;; *) false ;; esac
 }
 
-fm_identity_reserve_fresh_task() {  # <task-id>
-  local id=$1 record callsign created status
+fm_identity_reserve_fresh_task() {  # <task-id> [kind]
+  local id=$1 kind=${2:-ship} record callsign created status
   fm_identity_task_id_valid "$id" || { fm_identity_error "task id '$id' is invalid for a persistent callsign binding"; return 1; }
   record=$(fm_identity_task_record "$id")
   fm_identity_lock_acquire || return 1
@@ -526,7 +546,7 @@ fm_identity_reserve_fresh_task() {  # <task-id>
     fm_identity_error "task id '$id' collides with an active or historical human name in this Firstmate home"
     return 1
   fi
-  callsign=$(fm_identity_choose_fresh_callsign "$id") || { fm_identity_lock_release; return 1; }
+  callsign=$(fm_identity_choose_fresh_callsign "$id" "$kind") || { fm_identity_lock_release; return 1; }
   created=$(fm_identity_now)
   fm_identity_write_task_record "$record" "$id" "$callsign" provisioning "" "$created" \
     || { fm_identity_lock_release; return 1; }
@@ -562,10 +582,12 @@ fm_identity_activate_reserved_task_from_meta() {  # <meta> <task-id>
 }
 
 fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
-  local meta=$1 id=$2 mode=${3:-0} legacy=0 record callsign status created retired old_worktree new_worktree target
+  local meta=$1 id=$2 mode=${3:-0} legacy=0 record callsign status created retired old_worktree new_worktree target kind
   case "$mode" in 1|legacy|rebind) legacy=1 ;; esac
   fm_identity_task_id_valid "$id" || { fm_identity_error "task id '$id' is invalid for a persistent callsign binding"; return 1; }
   record=$(fm_identity_task_record "$id")
+  kind=$(fm_identity_meta_value "$meta" kind)
+  [ -n "$kind" ] || kind=ship
   fm_identity_lock_acquire || return 1
   if [ -e "$record" ] || [ -L "$record" ]; then
     if ! fm_identity_record_core_valid "$record" "$id"; then
@@ -607,12 +629,12 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
       return 1
     fi
     if [ "$legacy" = 1 ]; then
-      callsign=$(fm_identity_legacy_callsign "$id") || { fm_identity_lock_release; return 1; }
+      callsign=$(fm_identity_legacy_callsign "$id" "$kind") || { fm_identity_lock_release; return 1; }
       if fm_identity_name_matches_any "$callsign"; then
-        callsign=$(fm_identity_choose_fresh_callsign "$id") || { fm_identity_lock_release; return 1; }
+        callsign=$(fm_identity_choose_fresh_callsign "$id" "$kind") || { fm_identity_lock_release; return 1; }
       fi
     else
-      callsign=$(fm_identity_choose_fresh_callsign "$id") || { fm_identity_lock_release; return 1; }
+      callsign=$(fm_identity_choose_fresh_callsign "$id" "$kind") || { fm_identity_lock_release; return 1; }
     fi
     created=$(fm_identity_now)
   fi
@@ -644,8 +666,9 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
 }
 
 fm_identity_ensure_legacy_archive() {  # <task-id>
-  local id=$1 record callsign created
+  local id=$1 record callsign created kind=ship
   record=$(fm_identity_task_record "$id")
+  [ -f "$FM_IDENTITY_STATE/$id.meta" ] && kind=$(fm_identity_meta_value "$FM_IDENTITY_STATE/$id.meta" kind)
   fm_identity_lock_acquire || return 1
   if [ -e "$record" ] || [ -L "$record" ]; then
     fm_identity_record_core_valid "$record" "$id" || {
@@ -658,9 +681,9 @@ fm_identity_ensure_legacy_archive() {  # <task-id>
     printf '%s' "$callsign"
     return 0
   fi
-  callsign=$(fm_identity_legacy_callsign "$id") || { fm_identity_lock_release; return 1; }
+  callsign=$(fm_identity_legacy_callsign "$id" "$kind") || { fm_identity_lock_release; return 1; }
   if fm_identity_name_matches_any "$callsign"; then
-    callsign=$(fm_identity_choose_fresh_callsign "$id") || { fm_identity_lock_release; return 1; }
+    callsign=$(fm_identity_choose_fresh_callsign "$id" "$kind") || { fm_identity_lock_release; return 1; }
   fi
   created=$(fm_identity_now)
   fm_identity_write_task_record "$record" "$id" "$callsign" archived "" "$created" \
@@ -734,15 +757,20 @@ fm_identity_validate_active_binding() {  # <record> <meta> <task-id>
 }
 
 fm_identity_selector_conflicts_with_other_record() {  # <selector> <resolved-task-id>
-  local raw=$1 resolved_id=$2 wanted record id value
+  local raw=$1 resolved_id=$2 wanted record id value status
   wanted=$(fm_identity_fold "$raw")
   for record in "$FM_IDENTITY_DIR"/*.identity; do
     [ -f "$record" ] && [ ! -L "$record" ] || continue
     id=${record##*/}; id=${id%.identity}
     [ "$id" = "$resolved_id" ] && continue
+    status=$(fm_identity_record_value "$record" status 2>/dev/null || true)
+    case "$status" in
+      active|provisioning) ;;
+      *) continue ;;
+    esac
     while IFS= read -r value; do
       [ "$(fm_identity_fold "$value")" = "$wanted" ] && return 0
-    done < <(sed -n -e 's/^callsign=//p' -e 's/^retired_callsign=//p' "$record")
+    done < <(sed -n -e 's/^callsign=//p' "$record")
   done
   return 1
 }
@@ -767,7 +795,7 @@ fm_identity_exact_task_record_routes() {  # <record> <meta> <task-id>
 }
 
 fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
-  local state=$1 raw=$2 id record callsign status current_count=0 retired_count=0 match_id= match_record=
+  local state=$1 raw=$2 id record callsign status current_count=0 match_id='' match_record=''
   if ! fm_identity_task_id_valid "$raw"; then
     fm_identity_error "selector '$raw' is unsafe; use a callsign or exact task id from this Firstmate home"
     return 2
@@ -811,8 +839,13 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
   for record in "$FM_IDENTITY_DIR"/*.identity; do
     [ -f "$record" ] && [ ! -L "$record" ] || continue
     id=${record##*/}; id=${id%.identity}
+    status=$(fm_identity_record_value "$record" status 2>/dev/null || true)
+    case "$status" in
+      active|provisioning) ;;
+      *) continue ;;
+    esac
     if ! fm_identity_record_core_valid "$record" "$id"; then
-      if grep -qi "^callsign=$raw$\|^retired_callsign=$raw$" "$record" 2>/dev/null; then
+      if grep -qi "^callsign=$raw$" "$record" 2>/dev/null; then
         fm_identity_error "callsign '$raw' matches a malformed identity record; refusing to guess"
         return 2
       fi
@@ -822,28 +855,14 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
     if [ "$(fm_identity_fold "$callsign")" = "$(fm_identity_fold "$raw")" ]; then
       current_count=$((current_count + 1)); match_id=$id; match_record=$record
     fi
-    while IFS= read -r callsign; do
-      if [ "$(fm_identity_fold "$callsign")" = "$(fm_identity_fold "$raw")" ]; then
-        retired_count=$((retired_count + 1))
-      fi
-    done < <(sed -n 's/^retired_callsign=//p' "$record")
   done
   if [ "$current_count" -gt 1 ]; then
     fm_identity_error "callsign '$raw' is ambiguous across $current_count identity records; refusing to guess"
     return 2
   fi
-  if [ "$current_count" -eq 1 ] && [ "$retired_count" -gt 0 ]; then
-    fm_identity_error "callsign '$raw' conflicts with historical name history; refusing to rebind or guess"
-    return 2
-  fi
   if [ "$current_count" -eq 0 ]; then
-    if [ "$retired_count" -gt 0 ]; then
-      fm_identity_error "callsign '$raw' is historical after a rename and cannot be rebound or routed"
-      return 5
-    else
-      fm_identity_error "no callsign or task '$raw' exists in this Firstmate home"
-      return 3
-    fi
+    fm_identity_error "no callsign or task '$raw' exists in this Firstmate home"
+    return 3
   fi
   status=$(fm_identity_record_value "$match_record" status)
   if [ "$status" = archived ] || [ ! -f "$state/$match_id.meta" ]; then
@@ -894,7 +913,7 @@ fm_identity_rename_task() {  # <state-dir> <selector> <new-callsign>
   fi
   if fm_identity_name_matches_any "$new"; then
     fm_identity_lock_release
-    fm_identity_error "callsign '$new' is already active, historical, or reserved by this home's Firstmate identity"
+    fm_identity_error "callsign '$new' is already active or reserved by this home's Firstmate identity"
     return 1
   fi
   created=$(fm_identity_record_value "$record" created_at 2>/dev/null || fm_identity_now)
@@ -921,7 +940,7 @@ fm_identity_rename_home() {  # <new-name>
   fi
   if fm_identity_name_matches_any "$new"; then
     fm_identity_lock_release
-    fm_identity_error "name '$new' is already active or historical in this Firstmate home"
+    fm_identity_error "name '$new' is already active in this Firstmate home"
     return 1
   fi
   created=$(fm_identity_record_value "$FM_IDENTITY_HOME_RECORD" created_at 2>/dev/null || fm_identity_now)

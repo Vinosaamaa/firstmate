@@ -553,6 +553,7 @@ CODEX_SESSION_ID=01a02b1e-c95e-7a92-9e37-b0862d93e5e0
 
 publish_codex_binding() {  # <case-dir> [state]
   local case_dir=$1 lifecycle=${2:-parked}
+  # shellcheck disable=SC2016 # These arguments are intentionally interpreted by the child shell.
   env FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" \
     bash -c '. "$1"; . "$2"; fm_codex_session_publish "$3" task-x1 "$4" "$5" "$6"' \
       _ "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-codex-session-lib.sh" \
@@ -635,6 +636,31 @@ test_local_only_fork_remote_allows() {
   expect_code 0 "$rc" "fork-allow: teardown should succeed when HEAD is on a fork remote"
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
+}
+
+test_successful_teardown_releases_callsign() {
+  local case_dir rc record callsign
+  case_dir=$(make_case callsign-release)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "release callsign"
+  add_fork_with_pushed_branch "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "callsign-release: teardown should succeed"
+  record="$case_dir/data/crew-identities/task-x1.identity"
+  [ "$(sed -n 's/^status=//p' "$record")" = archived ] \
+    || fail "callsign-release: successful teardown did not preserve archived identity evidence"
+  callsign=$(sed -n 's/^callsign=//p' "$record")
+  FM_HOME="$case_dir" FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+    bash -c '. "$1/bin/fm-identity-lib.sh"; \
+      ! fm_identity_name_matches_any "$2"' _ "$ROOT" "$callsign" \
+    || fail "callsign-release: archived callsign still reserved after successful teardown"
+  pass "successful teardown archives evidence and releases the callsign"
 }
 
 test_teardown_prompts_tasks_axi_done_when_compatible() {
@@ -2650,6 +2676,7 @@ EOF
 }
 
 test_local_only_fork_remote_allows
+test_successful_teardown_releases_callsign
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
