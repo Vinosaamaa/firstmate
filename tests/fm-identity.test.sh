@@ -61,12 +61,60 @@ write_herdr_meta() { # <id> <session:pane> [thread]
   } > "$STATE/$id.meta"
 }
 
+write_kind_tmux_meta() { # <id> <target> <kind> [thread]
+  local id=$1 target=$2 kind=$3 thread=${4:-}
+  {
+    printf 'window=%s\n' "$target"
+    printf 'worktree=%s\n' "$WT"
+    printf 'project=%s\n' "$TMP_ROOT/project"
+    printf 'harness=codex\nkind=%s\n' "$kind"
+    printf 'spawn_gen=gen-%s\n' "$id"
+    [ -z "$thread" ] || printf 'codex_session_id=%s\n' "$thread"
+  } > "$STATE/$id.meta"
+}
+
+in_pool() {
+  case " $2 " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
 HOME_NAME=$(fm_identity_ensure_home)
 [ -n "$HOME_NAME" ] || fail "home name was not assigned"
 [ "$(fm_identity_ensure_home)" = "$HOME_NAME" ] || fail "home name changed across reads"
 [ "$(field "$DATA/firstmate.identity" home)" = "$(cd "$HOME_DIR" && pwd -P)" ] \
   || fail "home identity did not bind the canonical Firstmate home"
+in_pool "$HOME_NAME" "$FM_IDENTITY_HOME_POOL" || fail "fresh Firstmate home did not use the home pool"
+if fm_identity_validate_name Luffy >/dev/null 2>&1 || fm_identity_validate_name Roger >/dev/null 2>&1; then
+  fail "reserved Luffy or Roger was accepted"
+fi
 pass "one deterministic human name persists for the Firstmate home"
+
+# Existing names are durable compatibility data, not fresh-pool candidates.
+COMPAT_HOME="$TMP_ROOT/compat-home"
+COMPAT_DATA="$COMPAT_HOME/data"
+mkdir -p "$COMPAT_HOME/state" "$COMPAT_DATA/crew-identities"
+COMPAT_CANONICAL=$(cd "$COMPAT_HOME" && pwd -P)
+cat > "$COMPAT_DATA/firstmate.identity" <<EOF
+schema=fm-firstmate-identity.v1
+home=$COMPAT_CANONICAL
+name=Polaris
+created_at=2026-01-01T00:00:00Z
+updated_at=2026-01-01T00:00:00Z
+EOF
+cat > "$COMPAT_DATA/crew-identities/franklin.identity" <<EOF
+schema=fm-crew-identity.v1
+home=$COMPAT_CANONICAL
+task_id=franklin
+callsign=Franklin
+status=active
+EOF
+FM_HOME="$COMPAT_HOME" FM_ROOT_OVERRIDE="$ROOT" \
+FM_STATE_OVERRIDE="$COMPAT_HOME/state" FM_DATA_OVERRIDE="$COMPAT_DATA" \
+  bash -c '. "$1/bin/fm-identity-lib.sh"; \
+    [ "$(fm_identity_ensure_home)" = Polaris ] && \
+    [ "$(fm_identity_display_callsign franklin)" = Franklin ]' _ "$ROOT" \
+  || fail "existing Polaris home or Franklin identity was renamed"
+pass "existing Polaris and Franklin identities remain stable"
 
 CALL_A=$(fm_identity_reserve_fresh_task task-a)
 write_tmux_meta task-a fm-home:fm-task-a thread-a
@@ -93,6 +141,18 @@ REC_B=$(fm_identity_task_record task-b)
 [ "$(field "$REC_B" endpoint)" = fm-lab:pane-b ] || fail "Herdr endpoint binding missing"
 [ "$(field "$REC_B" endpoint_session_id)" = fm-lab ] || fail "Herdr session binding missing"
 pass "automatic callsigns are unique and backend-neutral"
+
+SECOND_CALL=$(fm_identity_reserve_fresh_task task-second secondmate)
+in_pool "$SECOND_CALL" "$FM_IDENTITY_SECOND_MATE_POOL" \
+  || fail "secondmate fresh identity escaped its role pool: $SECOND_CALL"
+write_kind_tmux_meta task-second fm-home:fm-task-second secondmate thread-second
+[ "$(fm_identity_ensure_task_from_meta "$STATE/task-second.meta" task-second)" = "$SECOND_CALL" ] \
+  || fail "secondmate activation changed the reserved callsign"
+SCOUT_CALL=$(fm_identity_reserve_fresh_task task-scout scout)
+in_pool "$SCOUT_CALL" "$FM_IDENTITY_CREWMATE_POOL" \
+  || fail "scout fresh identity escaped the crewmate pool: $SCOUT_CALL"
+[ "$SECOND_CALL" != "$SCOUT_CALL" ] || fail "role pools overlapped on a fresh identity"
+pass "fresh identities select deterministic, disjoint role pools"
 
 RENAMED_HOME=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" rename-home Harbor)
 [ "$RENAMED_HOME" = "Harbor (Firstmate home)" ] || fail "home rename was not persisted names-first"
@@ -123,7 +183,13 @@ fi
 if FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" resolve "$CALL_A" >/dev/null 2>&1; then
   fail "retired callsign remained routable after rename"
 fi
-pass "explicit rename validates active, task-id, reserved, and historical collisions"
+REUSED_OUT=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" rename "$CALL_B" "$CALL_A")
+[ "$REUSED_OUT" = "$CALL_A (task-b)" ] || fail "released callsign could not be reused: $REUSED_OUT"
+[ "$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" resolve "$CALL_A")" = "$CALL_A (task-b)" ] \
+  || fail "reused active callsign did not resolve to its new owner"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" rename "$CALL_A" "$CALL_B" >/dev/null \
+  || fail "reused callsign could not be released again"
+pass "explicit rename releases old callsigns while retaining collision safety"
 
 CASE_ONLY=$(printf '%s' "$EXPLICIT_A" | tr '[:upper:]' '[:lower:]')
 NAME_OUT=$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" rename "$EXPLICIT_A" "$CASE_ONLY")
@@ -200,7 +266,15 @@ FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" history | grep -q "^$CALL_B (task-b) 
 if fm_identity_reserve_fresh_task task-b >/dev/null 2>&1; then
   fail "archived task id was silently rebound"
 fi
-pass "cleanup retains history and active/historical callsigns never silently rebind"
+write_tmux_meta task-c fm-home:fm-task-c thread-c
+fm_identity_ensure_task_from_meta "$STATE/task-c.meta" task-c >/dev/null \
+  || fail "task-c could not be activated for archived-name reuse"
+FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" rename task-c "$CALL_B" >/dev/null \
+  || fail "archived callsign was not released for a new active owner"
+[ "$(FM_HOME="$HOME_DIR" "$ROOT/bin/fm-name.sh" resolve "$CALL_B")" = "$CALL_B (task-c)" ] \
+  || fail "archived-name reuse resolved ambiguously"
+REC_C=$(fm_identity_task_record task-c)
+pass "successful identity retirement releases names while preserving archived evidence"
 
 # Migration gives complete legacy tasks active fallback bindings, incomplete
 # records provisioning fallbacks, and status-only history archived tombstones.
@@ -219,12 +293,12 @@ pass "legacy unnamed tasks migrate deterministically and support explicit rename
 
 # Deliberately corrupt two private fixtures to prove ambiguous and task-id/name
 # conflicts refuse; restore them immediately so later history stays valid.
-cp "$REC_B" "$TMP_ROOT/record-b-safe"
-sed "s/^callsign=.*/callsign=$EXPLICIT_A/" "$REC_B" > "$REC_B.tmp" && mv "$REC_B.tmp" "$REC_B"
+cp "$REC_C" "$TMP_ROOT/record-c-safe"
+sed "s/^callsign=.*/callsign=$EXPLICIT_A/" "$REC_C" > "$REC_C.tmp" && mv "$REC_C.tmp" "$REC_C"
 if fm_identity_resolve_selector "$STATE" "$EXPLICIT_A" >/dev/null 2>&1; then
   fail "ambiguous duplicate callsign was guessed"
 fi
-cp "$TMP_ROOT/record-b-safe" "$REC_B"
+cp "$TMP_ROOT/record-c-safe" "$REC_C"
 cp "$(fm_identity_task_record legacy-live)" "$TMP_ROOT/legacy-safe"
 sed 's/^callsign=.*/callsign=task-a/' "$(fm_identity_task_record legacy-live)" > "$TMP_ROOT/legacy-conflict"
 cp "$TMP_ROOT/legacy-conflict" "$(fm_identity_task_record legacy-live)"

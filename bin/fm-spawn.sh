@@ -576,7 +576,7 @@ spawn_remote_secondmate() {
         return 1
       }
     else
-      CALLSIGN=$(fm_identity_reserve_fresh_task "$id") || {
+      CALLSIGN=$(fm_identity_reserve_fresh_task "$id" secondmate) || {
         fm_lock_release "$registry_lock" || true
         fm_lock_release "$SPAWN_TASK_LOCK" || true
         return 1
@@ -1110,7 +1110,7 @@ if [ "$RELAUNCH" -eq 0 ]; then
     CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1) || exit 1
     IDENTITY_REBIND_ALLOWED=1
   else
-    CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
+    CALLSIGN=$(fm_identity_reserve_fresh_task "$ID" "$KIND") || exit 1
     IDENTITY_FRESH_RESERVED=1
   fi
 fi

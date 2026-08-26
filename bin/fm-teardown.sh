@@ -2685,6 +2685,15 @@ if [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
 
+# Bind legacy metadata only after the landed-work and teardown safety gates have
+# passed. The active record keeps its callsign reserved through cleanup.
+if [ ! -f "$(fm_identity_task_record "$ID")" ]; then
+  fm_identity_ensure_task_from_meta "$META" "$ID" >/dev/null || {
+    echo "error: task $ID could not receive a persistent callsign; teardown aborted" >&2
+    exit 1
+  }
+fi
+
 # Fix 3 (see script header): sweep remote job workers abandoned by an already
 # pruned code root. Best effort - a sweep failure never blocks this teardown.
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true

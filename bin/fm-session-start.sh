@@ -339,6 +339,9 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 
+# Establish the persistent home identity without changing an existing name.
+fm_identity_ensure_home >/dev/null
+
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
 # the backlog listing and again inside the fm-bootstrap.sh child, which reports
