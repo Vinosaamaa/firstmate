@@ -21,7 +21,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
+fail() { printf 'not ok - %s\n' "$1" >&2; trap - EXIT; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
 command -v herdr >/dev/null 2>&1 || { echo "skip: herdr not found"; exit 0; }
@@ -181,15 +181,39 @@ sleep 30
 SH
 chmod +x "$SCRATCH/fakebin/codex"
 
-if ! herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
-  --agent fm-control-smoke-agent --session "$SESSION" >/dev/null 2>&1; then
-  STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
-  [ "$STATE" = dead ] \
-    || fail "could not release the synthetic agent before the Codex resume case (state: $STATE)"
-fi
+herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
+  --agent fm-control-smoke-agent --session "$SESSION" >/dev/null 2>&1 || true
 STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
-[ "$STATE" = dead ] \
-  || fail "the Codex resume case did not start from an agent-free pane (state: $STATE)"
+case "$STATE" in
+  dead) ;;
+  missing)
+    # The deliberately non-stopping exit case may still terminate its plain
+    # shell after the fail-closed verdict. Recreate only that missing fixture
+    # endpoint, then explicitly carry the same callsign onto its exact binding.
+    CONTAINER_RAW=$(fm_backend_herdr_container_ensure "$WT") \
+      || fail "could not recreate the synthetic fixture's Herdr workspace"
+    CONTAINER=${CONTAINER_RAW%%$'\t'*}
+    SEEDED_TAB_ID=${CONTAINER_RAW#*$'\t'}
+    WORKSPACE_ID=${CONTAINER#*:}
+    TASK_IDS=$(fm_backend_herdr_create_task "$CONTAINER" "fm-hsmoke" "$WT" "$SEEDED_TAB_ID") \
+      || fail "could not recreate the synthetic fixture's task pane"
+    read -r TAB_ID PANE_ID <<EOF
+$TASK_IDS
+EOF
+    sed -E \
+      -e "s|^window=.*$|window=$SESSION:$PANE_ID|" \
+      -e "s|^herdr_workspace_id=.*$|herdr_workspace_id=$WORKSPACE_ID|" \
+      -e "s|^herdr_tab_id=.*$|herdr_tab_id=$TAB_ID|" \
+      -e "s|^herdr_pane_id=.*$|herdr_pane_id=$PANE_ID|" \
+      "$HOME_DIR/state/hsmoke.meta" > "$HOME_DIR/state/hsmoke.meta.tmp"
+    mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
+    FM_HOME="$HOME_DIR" FM_STATE_OVERRIDE="$HOME_DIR/state" FM_ROOT_OVERRIDE="$ROOT" \
+      bash -c '. "$1/bin/fm-backend.sh"; . "$1/bin/fm-identity-lib.sh"; fm_identity_ensure_task_from_meta "$2" hsmoke rebind >/dev/null' \
+      _ "$ROOT" "$HOME_DIR/state/hsmoke.meta" \
+      || fail "could not carry the synthetic fixture's callsign onto its replacement pane"
+    ;;
+  *) fail "could not release the synthetic agent before the Codex resume case (state: $STATE)" ;;
+esac
 sed 's/^harness=claude$/harness=codex/' "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"
 printf 'spawn_gen=herdr-initial\n' >> "$HOME_DIR/state/hsmoke.meta.tmp"

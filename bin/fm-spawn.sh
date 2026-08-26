@@ -1103,6 +1103,7 @@ SPAWN_TASK_LOCK_HELD=1
 CALLSIGN=
 IDENTITY_FRESH_RESERVED=0
 IDENTITY_REBIND_ALLOWED=0
+IDENTITY_RECLAIM_ALLOWED=0
 if [ "$RELAUNCH" -eq 0 ]; then
   if [ "$KIND" = secondmate ] && [ -f "$STATE/$ID.meta" ]; then
     # Bootstrap's established secondmate recovery path predates --relaunch and
@@ -1123,6 +1124,7 @@ if [ "$RELAUNCH" -eq 0 ]; then
     # may reclaim and rebind it, so a genuinely live duplicate still refuses.
     CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
     IDENTITY_REBIND_ALLOWED=1
+    IDENTITY_RECLAIM_ALLOWED=1
   else
     CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
     IDENTITY_FRESH_RESERVED=1
@@ -3327,6 +3329,11 @@ if [ "$BACKEND" = tmux ]; then
 fi
 if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
   CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+elif [ "$IDENTITY_RECLAIM_ALLOWED" = 1 ]; then
+  # Projection recovery has already proved the exact old endpoint is a husk.
+  # A fresh Treehouse copy is therefore part of the same identity continuation,
+  # while every ordinary rebind still refuses a worktree change.
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" reclaim) || exit 1
 elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
   CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
 else

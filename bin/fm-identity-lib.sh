@@ -562,8 +562,13 @@ fm_identity_activate_reserved_task_from_meta() {  # <meta> <task-id>
 }
 
 fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
-  local meta=$1 id=$2 mode=${3:-0} legacy=0 record callsign status created retired old_worktree new_worktree target
-  case "$mode" in 1|legacy|rebind) legacy=1 ;; esac
+  local meta=$1 id=$2 mode=${3:-0} legacy=0 rebinding=0 worktree_reclaim=0
+  local record callsign status created retired old_worktree new_worktree target
+  case "$mode" in
+    1|legacy) legacy=1 ;;
+    rebind) legacy=1; rebinding=1 ;;
+    reclaim) legacy=1; rebinding=1; worktree_reclaim=1 ;;
+  esac
   fm_identity_task_id_valid "$id" || { fm_identity_error "task id '$id' is invalid for a persistent callsign binding"; return 1; }
   record=$(fm_identity_task_record "$id")
   fm_identity_lock_acquire || return 1
@@ -584,12 +589,13 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
     if [ "$status" = active ]; then
       old_worktree=$(fm_identity_record_value "$record" worktree 2>/dev/null || true)
       new_worktree=$(fm_identity_worktree_of_meta "$meta" 2>/dev/null || true)
-      if [ -n "$old_worktree" ] && [ "$old_worktree" != "$new_worktree" ]; then
+      if [ -n "$old_worktree" ] && [ "$old_worktree" != "$new_worktree" ] \
+        && [ "$worktree_reclaim" -ne 1 ]; then
         fm_identity_lock_release
         fm_identity_error "task $id's callsign $callsign is bound to worktree '$old_worktree', not '$new_worktree'; refusing to rebind it"
         return 1
       fi
-      if [ "$mode" != rebind ]; then
+      if [ "$rebinding" -ne 1 ]; then
         if ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
           fm_identity_lock_release
           fm_identity_error "task $id's callsign $callsign conflicts with its recorded endpoint or session identity; only an explicit relaunch/resume continuation may update that binding"
