@@ -553,6 +553,7 @@ CODEX_SESSION_ID=01a02b1e-c95e-7a92-9e37-b0862d93e5e0
 
 publish_codex_binding() {  # <case-dir> [state]
   local case_dir=$1 lifecycle=${2:-parked}
+  # shellcheck disable=SC2016 # positional parameters expand inside the child shell.
   env FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" \
     bash -c '. "$1"; . "$2"; fm_codex_session_publish "$3" task-x1 "$4" "$5" "$6"' \
       _ "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-codex-session-lib.sh" \

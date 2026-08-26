@@ -2630,8 +2630,10 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
 # Apply Firstmate's persistent callsign to Herdr's native friendly agent name.
 # The task tab keeps its internal fm-<id> label for recovery; supported harness
 # conversation titles own the richer terminal/tab presentation separately.
+# Codex callers prove composer readiness before this function; the short poll is
+# only a fallback for registration visibility lag and non-Codex harness startup.
 fm_backend_herdr_agent_rename() {  # <target> <callsign>
-  local target=$1 callsign=$2 polls=${FM_BACKEND_HERDR_AGENT_NAME_POLLS:-120}
+  local target=$1 callsign=$2 polls=${FM_BACKEND_HERDR_AGENT_NAME_POLLS:-12}
   local interval=${FM_BACKEND_HERDR_AGENT_NAME_POLL_INTERVAL:-0.5} i=0 identity
   fm_backend_herdr_parse_target "$target" || return 1
   while [ "$i" -lt "$polls" ]; do

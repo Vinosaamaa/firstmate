@@ -107,7 +107,7 @@ fm_display_secondmate_title() {  # <callsign> [context-code] [unicode|ascii]
   fi
 }
 
-fm_display_workspace_context_code() {  # <registered-workspace-id>
+fm_display_workspace_context_code_derive() {  # <registered-workspace-id>
   local workspace=${1:-} part code='' first=1 LC_ALL=C
   fm_display_value_safe "$workspace" || return 1
   case "$workspace" in ''|-*|*-|*--*|*[!A-Za-z0-9-]*) return 1 ;; esac
@@ -123,6 +123,22 @@ fm_display_workspace_context_code() {  # <registered-workspace-id>
   [ "$first" -eq 0 ] || return 1
   code=$(printf '%s' "$code" | tr '[:lower:]' '[:upper:]')
   fm_display_project_code_valid "$code" || return 1
+  printf '%s' "$code"
+}
+
+fm_display_workspace_context_code() {  # <registered-workspace-id> <newline-delimited-registered-workspace-ids>
+  local workspace=${1:-} registered=${2:-} code id candidate matches=0 found=0
+  [ -n "$registered" ] || return 1
+  code=$(fm_display_workspace_context_code_derive "$workspace") || return 1
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    [ "$id" != "$workspace" ] || found=$((found + 1))
+    candidate=$(fm_display_workspace_context_code_derive "$id" 2>/dev/null) || continue
+    [ "$candidate" != "$code" ] || matches=$((matches + 1))
+  done <<EOF
+$registered
+EOF
+  [ "$found" -eq 1 ] && [ "$matches" -eq 1 ] || return 1
   printf '%s' "$code"
 }
 

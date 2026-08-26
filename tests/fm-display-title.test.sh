@@ -43,11 +43,13 @@ test_secondmate_role_title_and_workspace_context() {
     || fail "secondmate ASCII title did not render"
   [ "$title" = 'Kepler - IP - 2M' ] \
     || fail "secondmate ASCII title changed: $title"
-  code=$(fm_display_workspace_context_code interview-prep) \
+  code=$(fm_display_workspace_context_code interview-prep $'interview-prep\njob-journey') \
     || fail "registered workspace id did not produce a ContextCode"
   [ "$code" = IP ] || fail "workspace ContextCode changed: $code"
-  fm_display_workspace_context_code interviewprep >/dev/null 2>&1 \
+  fm_display_workspace_context_code interviewprep $'interviewprep\njob-journey' >/dev/null 2>&1 \
     && fail "an unstructured workspace id invented a ContextCode"
+  fm_display_workspace_context_code interview-prep $'interview-prep\nidentity-platform' >/dev/null 2>&1 \
+    && fail "colliding registered workspace ids produced an ambiguous ContextCode"
   pass "display title: secondmates use stable role-aware context and fallback shapes"
 }
 

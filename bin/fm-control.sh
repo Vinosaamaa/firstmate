@@ -568,8 +568,9 @@ do_resumable_codex_exit() {
     status=$?
   fi
   rm -f "$before" "$after"
-  [ "$status" -eq 0 ] && fm_codex_session_uuid_valid "$session" \
-    || die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  if [ "$status" -ne 0 ] || ! fm_codex_session_uuid_valid "$session"; then
+    die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  fi
   fm_codex_session_publish "$STATE" "$ID" "$META" "$session" parked \
     || die "task $ID stopped, but its exact Codex session $session could not be claimed without conflicting with another task or binding; no resumable binding was published"
   printf '%s session=%s' "$result" "$session"
@@ -913,7 +914,7 @@ record_note() {
 # launch bytes may have been sent, or the endpoint is not positively dead, the
 # binding becomes uncertain and no caller may speculate by launching it again.
 codex_resume_reconcile_prior_attempt() {
-  local session= binding_meta= attempt="$JOURNAL.resume-attempt" attempt_phase state
+  local session='' binding_meta='' attempt="$JOURNAL.resume-attempt" attempt_phase state
   if session=$(fm_codex_session_validate "$STATE" "$ID" "$META" resuming 2>/dev/null); then
     binding_meta=$META
   elif [ -f "$META_PRIOR" ] \

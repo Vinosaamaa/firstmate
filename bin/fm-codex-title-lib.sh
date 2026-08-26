@@ -45,9 +45,8 @@ fm_codex_title_submit() {  # <backend> <target> <text> [expected-label]
   }
 }
 
-fm_codex_title_deliver() {  # <backend> <target> <expected-label> <callsign> <context-code> <task-label> <launch-brief|resume-note> <input-file> [task|secondmate]
-  local backend=$1 target=$2 expected=$3 callsign=$4 code=$5 label=$6 input_kind=$7 input_file=$8 role=${9:-task}
-  local title input opinput
+fm_codex_title_build() {  # <task|secondmate> <callsign> <context-code> <task-label>
+  local role=$1 callsign=$2 code=$3 label=$4 title
   case "$role" in
     task) title=$(fm_display_title "$callsign" "$code" "$label" unicode) ;;
     secondmate) title=$(fm_display_secondmate_title "$callsign" "$code" unicode) ;;
@@ -56,14 +55,31 @@ fm_codex_title_deliver() {  # <backend> <target> <expected-label> <callsign> <co
     printf 'error: refused malformed Codex display identity\n' >&2
     return 1
   }
+  printf '%s' "$title"
+}
+
+fm_codex_operational_input_encode() {  # <launch-brief|resume-note> <input-file>
+  local input_kind=$1 input_file=$2 opinput
   case "$input_kind" in launch-brief|resume-note) ;; *) return 1 ;; esac
   [ -f "$input_file" ] && [ ! -L "$input_file" ] || {
     printf 'error: Codex operational input file is missing or not a regular file: %s\n' "$input_file" >&2
     return 1
   }
   opinput="${FM_ROOT:-$(cd "$FM_CODEX_TITLE_LIB_DIR/.." && pwd)}/bin/fm-operational-input.sh"
-  input=$("$opinput" encode "$input_kind" < "$input_file") || return 1
-  fm_codex_title_wait_ready "$backend" "$target" "$expected" || return 1
+  "$opinput" encode "$input_kind" < "$input_file"
+}
+
+fm_codex_title_deliver_ready() {  # <backend> <target> <expected-label> <title> <encoded-input>
+  local backend=$1 target=$2 expected=$3 title=$4 input=$5
   fm_codex_title_submit "$backend" "$target" "/rename $title" "$expected" || return 1
   fm_codex_title_submit "$backend" "$target" "$input" "$expected" || return 1
+}
+
+fm_codex_title_deliver() {  # <backend> <target> <expected-label> <callsign> <context-code> <task-label> <launch-brief|resume-note> <input-file> [task|secondmate]
+  local backend=$1 target=$2 expected=$3 callsign=$4 code=$5 label=$6 input_kind=$7 input_file=$8 role=${9:-task}
+  local title input
+  title=$(fm_codex_title_build "$role" "$callsign" "$code" "$label") || return 1
+  input=$(fm_codex_operational_input_encode "$input_kind" "$input_file") || return 1
+  fm_codex_title_wait_ready "$backend" "$target" "$expected" || return 1
+  fm_codex_title_deliver_ready "$backend" "$target" "$expected" "$title" "$input"
 }

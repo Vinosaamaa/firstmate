@@ -86,7 +86,26 @@ test_secondmate_role_title_uses_same_supported_rename_path() {
   pass "Codex title adapter: secondmates use the role-aware title on the supported rename path"
 }
 
+test_ready_delivery_uses_prepared_title_and_input_without_polling_again() {
+  local title input
+  : > "$LOG"
+  printf '0\n' > "$READY_FILE"
+  title=$(fm_codex_title_build secondmate Kepler IP '') \
+    || fail "secondmate title preparation failed"
+  input=$(FM_ROOT="$ROOT" fm_codex_operational_input_encode launch-brief "$INPUT") \
+    || fail "operational input preparation failed"
+  fm_codex_title_deliver_ready herdr 'fm-lab-safe:w1:p3' fm-sm "$title" "$input" \
+    || fail "prepared Codex delivery failed"
+  [ "$(cat "$READY_FILE")" = 0 ] || fail "ready delivery repeated the composer poll"
+  assert_contains "$(sed -n '1p' "$LOG")" $'/rename Kepler · IP · 2M' \
+    "prepared delivery lost the secondmate title"
+  assert_contains "$(sed -n '2p' "$LOG")" 'Continue the exact assigned task.' \
+    "prepared delivery lost the operational input"
+  pass "Codex title adapter: readiness can be proven before native Herdr naming without a second poll"
+}
+
 test_tmux_and_herdr_share_codex_contract
 test_failed_rename_never_delivers_task_input
 test_secondmate_role_title_uses_same_supported_rename_path
+test_ready_delivery_uses_prepared_title_and_input_without_polling_again
 echo "# all fm-codex-title tests passed"

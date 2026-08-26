@@ -1899,7 +1899,7 @@ TITLE_CONTEXT_CODE=$PROJECT_CODE
 TITLE_TASK_LABEL=$TASK_LABEL
 
 secondmate_context_code() {  # <charter> <space-delimited-projects>
-  local charter=$1 projects=${2:-} workspace_count workspace project
+  local charter=$1 projects=${2:-} workspace_count workspace workspace_ids project
   workspace_count=$(awk '
     /^# Workspace pointers$/ { in_section=1; next }
     /^# / { in_section=0 }
@@ -1912,7 +1912,12 @@ secondmate_context_code() {  # <charter> <space-delimited-projects>
       /^# / { in_section=0 }
       in_section && /^- [^[:space:]]+$/ { print $2; exit }
     ' "$charter") || return 1
-    fm_display_workspace_context_code "$workspace" && return 0
+    workspace_ids=$(FM_HOME="$FM_HOME" "$FM_ROOT/bin/fm-workspace.sh" list 2>/dev/null | cut -f1) || return 2
+    if fm_display_workspace_context_code "$workspace" "$workspace_ids"; then
+      return 0
+    fi
+    echo "error: workspace '$workspace' has no unique derived ContextCode across the registered workspace ids" >&2
+    return 2
   fi
   # The registry owner returns one intentionally space-delimited project list.
   # shellcheck disable=SC2086
@@ -1943,7 +1948,13 @@ if [ "$KIND" = secondmate ] && [ "$BACKEND" = herdr ]; then
     TITLE_CONTEXT_CODE=$FM_DISPLAY_CONTEXT_CODE
   fi
   if [ -z "$TITLE_CONTEXT_CODE" ]; then
-    TITLE_CONTEXT_CODE=$(secondmate_context_code "$BRIEF" "${SECONDMATE_PROJECTS:-}" || true)
+    if TITLE_CONTEXT_CODE=$(secondmate_context_code "$BRIEF" "${SECONDMATE_PROJECTS:-}"); then
+      :
+    else
+      SECONDMATE_CONTEXT_STATUS=$?
+      [ "$SECONDMATE_CONTEXT_STATUS" -ne 2 ] || exit 1
+      TITLE_CONTEXT_CODE=
+    fi
   fi
   TITLE_TASK_LABEL=
 fi
@@ -3060,6 +3071,8 @@ CODEX_DEFERRED_INPUT=0
 CODEX_INPUT_KIND=launch-brief
 CODEX_INPUT_FILE=$BRIEF_REAL
 CODEX_INPUT=
+CODEX_TITLE=
+CODEX_OPERATIONAL_INPUT=
 case "$LAUNCH" in
   *__CODEXINPUT__*)
     if [ "$DISPLAY_TITLE_STATE" = present ]; then
@@ -3238,6 +3251,19 @@ spawn_quarantine_tmux_identity() {
   return "$status"
 }
 
+spawn_quarantine_herdr_secondmate() {
+  [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ] || return 1
+  fm_backend_herdr_kill "$T" >/dev/null 2>&1 || true
+  fm_backend_herdr_endpoint_confirmed_gone "$T"
+}
+
+spawn_harness_has_native_agent_identity() {
+  case "$1" in
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|muse) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
@@ -3292,18 +3318,40 @@ if [ "$BACKEND" = tmux ]; then
   }
 fi
 if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
-  if ! fm_codex_title_deliver \
-      "$BACKEND" "$T" "$W" "$CALLSIGN" "$TITLE_CONTEXT_CODE" "$TITLE_TASK_LABEL" \
-      "$CODEX_INPUT_KIND" "$CODEX_INPUT_FILE" "$DISPLAY_ROLE"; then
+  CODEX_TITLE=$(fm_codex_title_build \
+    "$DISPLAY_ROLE" "$CALLSIGN" "$TITLE_CONTEXT_CODE" "$TITLE_TASK_LABEL") || exit 1
+  CODEX_OPERATIONAL_INPUT=$(fm_codex_operational_input_encode \
+    "$CODEX_INPUT_KIND" "$CODEX_INPUT_FILE") || exit 1
+  if ! fm_codex_title_wait_ready "$BACKEND" "$T" "$W"; then
     printf 'failed: Codex conversation naming or initial task delivery was not confirmed\n' >> "$STATE/$ID.status"
-    echo "error: Codex conversation naming or initial task delivery was not confirmed; inspect window $T" >&2
+    if [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ]; then
+      spawn_quarantine_herdr_secondmate || true
+    fi
+    echo "error: Codex readiness for conversation naming was not confirmed; inspect window $T" >&2
     exit 1
   fi
 fi
-if [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ]; then
+# Raw test/escape-hatch commands have no Herdr agent identity to rename.
+if [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ] \
+   && spawn_harness_has_native_agent_identity "$HARNESS"; then
   if ! fm_backend_herdr_agent_rename "$T" "$CALLSIGN"; then
     printf 'failed: Herdr secondmate agent naming was not confirmed\n' >> "$STATE/$ID.status"
-    echo "error: Herdr did not confirm callsign '$CALLSIGN' for secondmate $ID; inspect window $T" >&2
+    if spawn_quarantine_herdr_secondmate; then
+      echo "error: Herdr did not confirm callsign '$CALLSIGN' for secondmate $ID; the exact task pane was retired" >&2
+    else
+      echo "error: Herdr did not confirm callsign '$CALLSIGN' for secondmate $ID; exact task-pane cleanup is incomplete" >&2
+    fi
+    exit 1
+  fi
+fi
+if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
+  if ! fm_codex_title_deliver_ready \
+      "$BACKEND" "$T" "$W" "$CODEX_TITLE" "$CODEX_OPERATIONAL_INPUT"; then
+    printf 'failed: Codex conversation naming or initial task delivery was not confirmed\n' >> "$STATE/$ID.status"
+    if [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ]; then
+      spawn_quarantine_herdr_secondmate || true
+    fi
+    echo "error: Codex conversation naming or initial task delivery was not confirmed; inspect window $T" >&2
     exit 1
   fi
 fi

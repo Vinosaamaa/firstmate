@@ -399,18 +399,20 @@ SME_WS=$(workspace_of_pane "$SME_PANE")
   || fail "the duplicate secondmate-labeled workspace was mutated"
 pass "real herdr E2E: a secondmate launching its own worker gets the same exact-workspace guarantee, and its same-labeled sibling is untouched"
 
-# --- 7. a --secondmate launch is NOT collapsed into the launcher's workspace -
+# --- 7. a local --secondmate launch stays visible beside its Herdr primary --
 
 spawn_from_launcher "$LAUNCH_DUP_PANE" "$PRIMARY_HOME" "$SM2_ID" "$SM2_HOME" --secondmate
 [ "$SPAWN_RC" -eq 0 ] || fail "the primary's --secondmate launch failed"$'\n'"$(cat "$SPAWN_ERR")"
 SM2_META="$PRIMARY_HOME/state/$SM2_ID.meta"
 SM2_PANE=$(grep '^herdr_pane_id=' "$SM2_META" | cut -d= -f2-)
 SM2_WS=$(workspace_of_pane "$SM2_PANE")
-[ "$SM2_WS" != "$WS_PRIMARY_DUP" ] \
-  || fail "a --secondmate launch must stand up the secondmate's own workspace, not join the launcher's"
-[ "$(label_of_workspace "$SM2_WS")" = "2ndmate-$SM2_ID" ] \
-  || fail "a --secondmate launch should land in '2ndmate-$SM2_ID', got '$(label_of_workspace "$SM2_WS")'"
-pass "real herdr E2E: a --secondmate launch still stands up that secondmate's own workspace instead of inheriting the launcher's"
+[ "$SM2_WS" = "$WS_PRIMARY_DUP" ] \
+  || fail "a local --secondmate launch must stay in its Herdr primary's exact workspace ($WS_PRIMARY_DUP), got '$SM2_WS'"
+case "$(tab_labels_of_workspace "$WS_PRIMARY_DUP")" in
+  *"fm-$SM2_ID"*) ;;
+  *) fail "the local secondmate's sibling tab is absent from its Herdr primary's workspace" ;;
+esac
+pass "real herdr E2E: a local --secondmate launch stays visible as a sibling tab in its Herdr primary's exact workspace"
 
 # --- 8. teardown closes only the worker's own pane --------------------------
 
