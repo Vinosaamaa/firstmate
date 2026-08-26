@@ -260,7 +260,7 @@ EOF
     detach_program='my $pid_file = shift @ARGV;
       defined(my $pid = fork) or exit 125;
       if ($pid == 0) {
-        setpgrp(0, 0) == 0 or exit 125;
+        defined(setpgrp(0, 0)) or exit 125;
         exec @ARGV;
         exit 125;
       }
