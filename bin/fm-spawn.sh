@@ -1934,7 +1934,8 @@ secondmate_context_code() {  # <charter> <space-delimited-projects>
   return 1
 }
 
-if [ "$KIND" = secondmate ] && [ "$BACKEND" = herdr ]; then
+if [ "$KIND" = secondmate ] && [ "$BACKEND" = herdr ] \
+   && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
   DISPLAY_ROLE=secondmate
   DISPLAY_TITLE_STATE=present
   SECONDMATE_CONTEXT_META=
@@ -3042,13 +3043,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fm_lock_release "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=0
 fi
-if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
-  CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
-elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
-  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
-else
-  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
-fi
 if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   # The record is published, so this task is now part of the set a teardown
   # enumerates and locks per task. The set lock is only needed across that
@@ -3317,6 +3311,13 @@ if [ "$BACKEND" = tmux ]; then
     exit 1
   }
 fi
+if [ "$IDENTITY_FRESH_RESERVED" = 1 ]; then
+  CALLSIGN=$(fm_identity_activate_reserved_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+elif [ "$RELAUNCH" = 1 ] || [ "$IDENTITY_REBIND_ALLOWED" = 1 ]; then
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" rebind) || exit 1
+else
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
+fi
 if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
   CODEX_TITLE=$(fm_codex_title_build \
     "$DISPLAY_ROLE" "$CALLSIGN" "$TITLE_CONTEXT_CODE" "$TITLE_TASK_LABEL") || exit 1
@@ -3333,6 +3334,7 @@ if [ "$CODEX_DEFERRED_INPUT" -eq 1 ]; then
 fi
 # Raw test/escape-hatch commands have no Herdr agent identity to rename.
 if [ "$BACKEND" = herdr ] && [ "$KIND" = secondmate ] \
+   && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ] \
    && spawn_harness_has_native_agent_identity "$HARNESS"; then
   if ! fm_backend_herdr_agent_rename "$T" "$CALLSIGN"; then
     printf 'failed: Herdr secondmate agent naming was not confirmed\n' >> "$STATE/$ID.status"

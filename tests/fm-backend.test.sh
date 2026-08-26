@@ -778,13 +778,17 @@ set -u
 { printf 'tmux'; for a in "\$@"; do printf '\\x1f%s' "\$a"; done; printf '\\n'; } >> "\${FM_TMUX_LOG:?}"
 case "\${1:-}" in
   display-message)
-    for a in "\$@"; do case "\$a" in *pane_current_path*) printf '%s\\n' "$wt"; exit 0 ;; esac; done
+    for a in "\$@"; do case "\$a" in
+      *pane_current_path*) printf '%s\\n' "$wt"; exit 0 ;;
+      *'#{pane_id}|#{pane_tty}'*) printf '%%99|/dev/ttys999\\n'; exit 0 ;;
+    esac; done
     printf 'firstmate\\n'; exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  fm_fake_tmux_agent_ps "$fb"
   fm_fake_exit0 "$fb" treehouse
   printf '%s\n' "$fb"
 }
@@ -840,21 +844,25 @@ set -u
 { printf 'tmux'; for a in "\$@"; do printf '\\x1f%s' "\$a"; done; printf '\\n'; } >> "\${FM_TMUX_LOG:?}"
 case "\${1:-}" in
   display-message)
-    for a in "\$@"; do case "\$a" in *pane_current_path*)
-      printf x >> "$counter"
-      if [ "\$(wc -c < "$counter")" -le 1 ]; then
-        printf '%s\\n' "$initial_path"
-      else
-        printf '%s\\n' "$wt"
-      fi
-      exit 0
-    ;; esac; done
+    for a in "\$@"; do case "\$a" in
+      *pane_current_path*)
+        printf x >> "$counter"
+        if [ "\$(wc -c < "$counter")" -le 1 ]; then
+          printf '%s\\n' "$initial_path"
+        else
+          printf '%s\\n' "$wt"
+        fi
+        exit 0
+        ;;
+      *'#{pane_id}|#{pane_tty}'*) printf '%%99|/dev/ttys999\\n'; exit 0 ;;
+    esac; done
     printf 'firstmate\\n'; exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  fm_fake_tmux_agent_ps "$fb"
   fm_fake_exit0 "$fb" treehouse
   printf '%s\n' "$fb"
 }

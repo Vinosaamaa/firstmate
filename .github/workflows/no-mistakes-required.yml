@@ -31,8 +31,15 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -eu
+          fastlane_marker='<!-- firstmate-delivery-mode:direct-PR -->'
+          if [ "$PR_AUTHOR" = "$REPOSITORY_OWNER" ] \
+            && printf '%s' "${PR_BODY:-}" | grep -qF -- "$fastlane_marker"; then
+            echo "Found repository-owner Fastlane declaration in PR #${PR_NUMBER}."
+            exit 0
+          fi
           marker='Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)'
           if printf '%s' "${PR_BODY:-}" | grep -qF -- "$marker"; then
             echo "Found no-mistakes signature in PR #${PR_NUMBER} body."
@@ -119,5 +126,9 @@ jobs:
             echo "See CONTRIBUTING.md for setup and the full workflow."
             echo
             echo "PR author: ${PR_AUTHOR}"
+            echo
+            echo "Repository-owner Fastlane PRs may instead declare:"
+            echo
+            echo "    $fastlane_marker"
           } >&2
           exit 1
