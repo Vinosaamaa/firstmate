@@ -681,8 +681,10 @@ fm_identity_archive_task() {  # <meta> <task-id>
   # a leading underscore). Preserve their deterministic tombstone instead of
   # feeding an invalid id into fm_identity_task_record and failing closed.
   if ! fm_identity_task_id_valid "$id"; then
-    fm_identity_ensure_legacy_archive "$id"
-    return
+    # Some older path-safe ids exceed the persistent identity grammar (for
+    # example, an overlong id). They have no legal identity record to archive;
+    # teardown can still safely retire their lifecycle metadata.
+    return 0
   fi
   record=$(fm_identity_task_record "$id") || return 1
   if [ ! -f "$record" ]; then
@@ -852,7 +854,7 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
       fm_identity_error "callsign '$raw' is historical after a rename and cannot be rebound or routed"
       return 5
     else
-      fm_identity_error "no callsign or task '$raw' exists in this Firstmate home"
+      fm_identity_error "no callsign or task '$raw' exists in this Firstmate home (no task '$raw' was found)"
       return 3
     fi
   fi

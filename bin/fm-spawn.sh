@@ -1105,7 +1105,9 @@ IDENTITY_FRESH_RESERVED=0
 IDENTITY_REBIND_ALLOWED=0
 IDENTITY_RECLAIM_ALLOWED=0
 if [ "$RELAUNCH" -eq 0 ]; then
-  if [ "$KIND" = secondmate ] && [ -f "$STATE/$ID.meta" ]; then
+  if [ "$KIND" = secondmate ] \
+    && { [ -f "$STATE/$ID.meta" ] \
+      || [ "$(fm_identity_record_value "$(fm_identity_task_record "$ID")" status 2>/dev/null || true)" = active ]; }; then
     # Bootstrap's established secondmate recovery path predates --relaunch and
     # intentionally invokes an ordinary --secondmate spawn against the durable
     # task record. It is a continuation, not a fresh task: validate/adopt the
@@ -1125,6 +1127,27 @@ if [ "$RELAUNCH" -eq 0 ]; then
     CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID") || exit 1
     IDENTITY_REBIND_ALLOWED=1
     IDENTITY_RECLAIM_ALLOWED=1
+  elif [ "$KIND" != secondmate ] && [ -f "$STATE/$ID.meta" ] \
+    && [ ! -L "$STATE/$ID.meta" ] \
+    && [ "$(fm_identity_record_value "$(fm_identity_task_record "$ID")" status 2>/dev/null || true)" = active ]; then
+    # A repeated ordinary spawn is a recovery continuation when the recorded
+    # endpoint is confidently dead or missing. Preserve its callsign and let
+    # the normal publication path rebind the replacement endpoint; live,
+    # ambiguous, and malformed records remain fresh-assignment refusals.
+    recovery_state=unreadable
+    if fm_backend_validate_task_endpoint "$STATE/$ID.meta" "$ID" 2>/dev/null; then
+      recovery_state=$(fm_backend_agent_state "$FM_BACKEND_VALIDATED_BACKEND" "$FM_BACKEND_VALIDATED_TARGET")
+    fi
+    case "$recovery_state" in
+      dead|missing)
+        CALLSIGN=$(fm_identity_display_callsign "$ID") || exit 1
+        IDENTITY_REBIND_ALLOWED=1
+        ;;
+      *)
+        CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
+        IDENTITY_FRESH_RESERVED=1
+        ;;
+    esac
   else
     CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1
     IDENTITY_FRESH_RESERVED=1
