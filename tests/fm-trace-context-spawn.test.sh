@@ -31,7 +31,8 @@ case "${1:-}" in
     [ -z "${FM_FAKE_DUPLICATE_WINDOW:-}" ] || printf '%s\n' "$FM_FAKE_DUPLICATE_WINDOW"
     exit 0
     ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  new-window) printf '@spawnwid\n'; exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
   send-keys)
     if [ "${FM_FAKE_TRACEPARENT_SEND_FAIL:-0}" = 1 ]; then
       for a in "$@"; do
@@ -48,13 +49,18 @@ case "${1:-}" in
       done
     fi
     if [ "${FM_FAKE_TRACE_METADATA_APPEND_FAIL:-0}" = 1 ]; then
+      trace_export=
       for a in "$@"; do
         case "$a" in
           "export TRACEPARENT="*)
+            trace_export=1
             chmod a-w "$FM_FAKE_META_PATH"
             ;;
         esac
       done
+      # The optional trace append fails once, then the fixture restores the
+      # metadata before mandatory post-launch identity publication.
+      [ -n "$trace_export" ] || chmod u+w "$FM_FAKE_META_PATH"
     fi
     # Capture the text payload of both send forms: the literal launch
     # (`send-keys -t <target> -l <text>`) and a text line

@@ -282,8 +282,6 @@ if ! fm_task_id_creation_valid "$ID"; then
   die "resolved task id '$ID' is invalid"
 fi
 if [ ! -f "$(fm_identity_task_record "$ID")" ]; then
-  fm_identity_ensure_task_compatible "$STATE/$ID.meta" "$ID" >/dev/null \
-    || die "legacy task $ID could not receive a persistent callsign"
   CALLSIGN=$(fm_identity_display_callsign "$ID")
 fi
 # Supervision lease guard: lifecycle control is overlap territory between the

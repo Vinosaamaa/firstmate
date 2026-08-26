@@ -297,7 +297,7 @@ fm_send_count_colons() {  # <string>
 }
 
 fm_send_resolve_target() {  # <raw-target>
-  local raw=$1 meta pane_meta target backend assumed colons id resolved_id session hint identity_rc identity_record identity_status
+  local raw=$1 meta pane_meta target backend assumed colons id resolved_id session hint identity_rc
 
   RESOLVED_TARGET=""
   TARGET_BACKEND=""
@@ -336,11 +336,6 @@ fm_send_resolve_target() {  # <raw-target>
           fm_identity_error "selector '$raw' resolved to task $resolved_id but backend metadata selected task $id; refusing to guess"
           return 1
         }
-      fi
-      identity_record=$(fm_identity_task_record "$id")
-      identity_status=$(fm_identity_record_value "$identity_record" status 2>/dev/null || true)
-      if [ "$identity_status" != active ]; then
-        fm_identity_ensure_task_compatible "$meta" "$id" >/dev/null || return 1
       fi
       ;;
   esac

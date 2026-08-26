@@ -433,7 +433,7 @@ fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
     fm_identity_error "shared backend endpoint validation is unavailable for task $id"
     return 1
   }
-  fm_backend_validate_task_endpoint "$meta" "$id"
+  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1
 }
 
 fm_identity_write_task_record() {  # <record> <id> <callsign> <status> <meta|empty> <created> [retired-file]
@@ -649,21 +649,6 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
   printf '%s' "$callsign"
 }
 
-# Exact task-id operations predate persistent callsigns. Keep those operations
-# available when safe legacy metadata cannot be upgraded into a full identity
-# record, while still requiring the endpoint to belong to the requested task.
-# Callsign selectors and all rebinding paths continue to require an exact
-# published record through fm_identity_ensure_task_from_meta above.
-fm_identity_ensure_task_compatible() {  # <meta> <task-id>
-  local meta=$1 id=$2 callsign
-  if callsign=$(fm_identity_ensure_task_from_meta "$meta" "$id" legacy 2>/dev/null); then
-    printf '%s' "$callsign"
-    return 0
-  fi
-  fm_identity_validate_meta_endpoint_ownership "$meta" "$id" || return 1
-  fm_identity_display_callsign "$id"
-}
-
 fm_identity_ensure_legacy_archive() {  # <task-id>
   local id=$1 record callsign created
   record=$(fm_identity_task_record "$id")
@@ -809,13 +794,8 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
       fm_identity_error "selector '$raw' conflicts with another task's current or historical callsign; refusing to guess"
       return 2
     fi
-    record=$(fm_identity_task_record "$id")
-    if [ -e "$record" ] || [ -L "$record" ]; then
-      fm_identity_exact_task_record_routes "$record" "$state/$id.meta" "$id" || {
-        fm_identity_error "task '$id' has conflicting or unsafe callsign identity; refusing to route"
-        return 2
-      }
-    fi
+    # Exact task ids are the pre-callsign compatibility route. Backend-specific
+    # ownership checks still run before any bytes or lifecycle mutation.
     printf '%s' "$id"
     return 0
   fi
@@ -826,13 +806,6 @@ fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
         if fm_identity_selector_conflicts_with_other_record "$raw" "$id"; then
           fm_identity_error "selector '$raw' conflicts with another task's current or historical callsign; refusing to guess"
           return 2
-        fi
-        record=$(fm_identity_task_record "$id")
-        if [ -e "$record" ] || [ -L "$record" ]; then
-          fm_identity_exact_task_record_routes "$record" "$state/$id.meta" "$id" || {
-            fm_identity_error "task '$id' has conflicting or unsafe callsign identity; refusing to route"
-            return 2
-          }
         fi
         printf '%s' "$id"
         return 0

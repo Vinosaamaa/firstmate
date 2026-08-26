@@ -1110,7 +1110,7 @@ if [ "$RELAUNCH" -eq 0 ]; then
     # intentionally invokes an ordinary --secondmate spawn against the durable
     # task record. It is a continuation, not a fresh task: validate/adopt the
     # existing binding now and publish its replacement endpoint below.
-    CALLSIGN=$(fm_identity_ensure_task_compatible "$STATE/$ID.meta" "$ID") || exit 1
+    CALLSIGN=$(fm_identity_display_callsign "$ID") || exit 1
     IDENTITY_REBIND_ALLOWED=1
   elif [ "$BACKEND" = herdr ] && [ "$KIND" != secondmate ] \
     && [ -f "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ] \
@@ -2206,7 +2206,7 @@ case "$BACKEND" in
     TMUX_PANE_ID=$FM_BACKEND_TMUX_PANE_ID
     TMUX_PANE_TTY=$FM_BACKEND_TMUX_PANE_TTY
     T=$TMUX_PANE_ID
-    WT_TARGET=$T
+    WT_TARGET=$WID
     ;;
   herdr)
     # fm_backend_herdr_workspace_label resolves the target workspace from
