@@ -351,6 +351,7 @@ fm_codex_session_rebind() {  # <state> <task> <old-meta> <new-meta> <expected> <
   local state_dir=$1 task=$2 old_meta=$3 new_meta=$4 expected=$5 lifecycle=$6
   local session side owner status=0 old_endpoint new_endpoint old_wt new_wt updated_at
   local old_backend new_backend old_gen new_gen field old_value new_value
+  local old_pane new_pane
   fm_codex_session_task_valid "$task" || return 1
   fm_codex_session_index_lock_acquire "$state_dir" || return 1
   session=$(fm_codex_session_validate_locked "$state_dir" "$task" "$old_meta" "$expected" 2>/dev/null) || status=1
@@ -360,10 +361,18 @@ fm_codex_session_rebind() {  # <state> <task> <old-meta> <new-meta> <expected> <
   new_wt=$(fm_codex_session_meta_field "$new_meta" worktree 2>/dev/null || true)
   old_backend=$(fm_codex_session_backend_of_meta "$old_meta")
   new_backend=$(fm_codex_session_backend_of_meta "$new_meta")
+  old_pane=$(fm_codex_session_meta_field "$old_meta" tmux_pane_id 2>/dev/null || true)
+  new_pane=$(fm_codex_session_meta_field "$new_meta" tmux_pane_id 2>/dev/null || true)
   old_gen=$(fm_codex_session_meta_field "$old_meta" spawn_gen 2>/dev/null || true)
   new_gen=$(fm_codex_session_meta_field "$new_meta" spawn_gen 2>/dev/null || true)
-  [ "$old_endpoint" = "$new_endpoint" ] \
-    && [ "$old_wt" = "$new_wt" ] \
+  # Legacy tmux metadata used a named window target. A relaunch now records the
+  # stable pane target; allow that one-way migration while retaining all other
+  # endpoint, worktree, backend, and generation guards.
+  if [ "$old_endpoint" != "$new_endpoint" ] \
+    && { [ "$old_backend" != tmux ] || [ -n "$old_pane" ] || [ "$new_pane" != "$new_endpoint" ]; }; then
+    status=1
+  fi
+  [ "$old_wt" = "$new_wt" ] \
     && [ "$old_backend" = "$new_backend" ] \
     && [ -n "$old_gen" ] && [ -n "$new_gen" ] \
     && [ "$old_gen" != "$new_gen" ] || status=1

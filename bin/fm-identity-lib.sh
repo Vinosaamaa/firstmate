@@ -677,7 +677,14 @@ fm_identity_ensure_legacy_archive() {  # <task-id>
 
 fm_identity_archive_task() {  # <meta> <task-id>
   local meta=$1 id=$2 record callsign created retired status archive_meta
-  record=$(fm_identity_task_record "$id")
+  # Path-safe legacy status ids predate the persistent-id grammar (for example
+  # a leading underscore). Preserve their deterministic tombstone instead of
+  # feeding an invalid id into fm_identity_task_record and failing closed.
+  if ! fm_identity_task_id_valid "$id"; then
+    fm_identity_ensure_legacy_archive "$id"
+    return
+  fi
+  record=$(fm_identity_task_record "$id") || return 1
   if [ ! -f "$record" ]; then
     fm_identity_ensure_legacy_archive "$id"
     return

@@ -275,6 +275,7 @@ case "${1:-}" in
   display-message)
     for a in "$@"; do
       case "$a" in
+        *pane_id*'|'*pane_tty*) printf '%%99|/dev/ttys999\n'; exit 0 ;;
         *pane_current_command*)
           case "$mode" in
             missing) printf '%s\n' node; exit 0 ;;
@@ -295,6 +296,7 @@ case "${1:-}" in
     ;;
   new-window|kill-window)
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
+    [ "${1:-}" = new-window ] && printf '@spawnwid\n'
     [ "${1:-}" = kill-window ] && : > "${FM_TMUX_CALL_LOG}.killed"
     [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && [ "${1:-}" = new-window ] && exit 1
     [ "${1:-}" = new-window ] && rm -f "${FM_TMUX_CALL_LOG}.killed"
@@ -305,6 +307,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_tmux_agent_ps "$fakebin"
   printf '%s\n' "$fakebin"
 }
 

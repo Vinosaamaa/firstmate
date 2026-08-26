@@ -190,6 +190,16 @@ case "$RAW_ID" in
     fi
     ;;
 esac
+# A supervision lease is keyed by the exact task id, so check it before
+# selector resolution can reject an unregistered-but-live task id. Restrict
+# this early probe to canonical ids so arbitrary selector text never becomes a
+# filesystem path.
+# shellcheck source=bin/fm-lease-lib.sh
+. "$SCRIPT_DIR/fm-lease-lib.sh"
+if fm_task_id_creation_valid "$RAW_ID" \
+  && { [ -e "$STATE/.lease-$RAW_ID" ] || [ -L "$STATE/.lease-$RAW_ID" ]; }; then
+  fm_lease_guard "$RAW_ID" "lifecycle control (fm-control)"
+fi
 ID=$(fm_identity_resolve_selector "$STATE" "$RAW_ID") || exit 1
 CALLSIGN=$(fm_identity_display_callsign "$ID")
 
@@ -287,8 +297,6 @@ fi
 # Supervision lease guard: lifecycle control is overlap territory between the
 # two Pi supervision actors; refuse while the OTHER actor holds this task's
 # live lease (contract: bin/fm-lease-lib.sh; no-op in homes without leases).
-# shellcheck source=bin/fm-lease-lib.sh
-. "$SCRIPT_DIR/fm-lease-lib.sh"
 fm_lease_guard "$ID" "lifecycle control (fm-control)"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 trap control_cleanup EXIT
@@ -298,6 +306,14 @@ CONTROL_LOCK_HELD=1
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ]; then
   die "no active task for $CALLSIGN ($ID) in $STATE"
+fi
+# Herdr control is also the recovery boundary for pre-callsign Herdr tasks.
+# Allocate the persistent identity only after the lifecycle lock is held, while
+# preserving exact-id compatibility for ordinary legacy workers.
+if [ ! -f "$(fm_identity_task_record "$ID")" ] \
+  && [ "$(fm_meta_get "$META" backend)" = herdr ]; then
+  CALLSIGN=$(fm_identity_ensure_task_from_meta "$META" "$ID" legacy) \
+    || die "could not publish the Herdr identity binding for task $ID"
 fi
 
 # A remotely placed secondmate records its endpoint on ANOTHER host, so every

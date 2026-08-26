@@ -343,6 +343,7 @@ case "${1:-}" in
     done
     if [ "${target#%}" != "$target" ]; then
       case "$format" in
+        *pane_id*'|'*pane_tty*) printf '%%1|/dev/ttys999\n' ;;
         *pane_current_path*) printf '%s\n' "$mate_home" ;;
         *pane_current_command*) printf '%s\n' node ;;
         *) printf '%s\n' "$target" ;;
@@ -394,7 +395,7 @@ case "${1:-}" in
   new-window)
     printf '%s\n' "$*" >> "$log"
     : > "$spawned"
-    printf '%%1\n'
+    printf '@spawnwid\n'
     exit 0
     ;;
   set-window-option|send-keys) exit 0 ;;
@@ -402,6 +403,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_fake_tmux_agent_ps "$fakebin"
 }
 
 make_fake_herdr_secondmate_recovery() {
