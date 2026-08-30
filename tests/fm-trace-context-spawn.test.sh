@@ -4,8 +4,8 @@
 # See docs/verification/trace-context.md for the maintained coverage inventory.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-trace-context-lib.sh"
 
@@ -23,6 +23,18 @@ make_spawn_fakebin() {
 set -u
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_id}|#{pane_tty}"*) printf '%%1|/dev/ttys999\n'; exit 0 ;;
+  *"#{pane_id}"*) printf '%%1\n'; exit 0 ;;
+  *"#{pane_tty}"*) printf '/dev/ttys999\n'; exit 0 ;;
+  *"#{pane_current_command}"*)
+    if [ -n "${FM_FAKE_TMUX_AGENT_STOPPED_MARKER:-}" ] \
+       && [ -f "$FM_FAKE_TMUX_AGENT_STOPPED_MARKER" ]; then
+      printf 'zsh\n'
+    else
+      printf 'codex\n'
+    fi
+    exit 0
+    ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -30,8 +42,12 @@ case "${1:-}" in
     [ -z "${FM_FAKE_DUPLICATE_WINDOW:-}" ] || printf '%s\n' "$FM_FAKE_DUPLICATE_WINDOW"
     exit 0
     ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  new-window) printf '@1\n'; exit 0 ;;
+  has-session|new-session|kill-window) exit 0 ;;
   send-keys)
+    if [ -n "${FM_FAKE_TMUX_AGENT_STOPPED_MARKER:-}" ]; then
+      rm -f "$FM_FAKE_TMUX_AGENT_STOPPED_MARKER"
+    fi
     if [ "${FM_FAKE_TRACEPARENT_SEND_FAIL:-0}" = 1 ]; then
       for a in "$@"; do
         case "$a" in
@@ -50,7 +66,7 @@ case "${1:-}" in
       for a in "$@"; do
         case "$a" in
           "export TRACEPARENT="*)
-            chmod a-w "$FM_FAKE_META_PATH"
+            : > "$FM_FAKE_TRACE_METADATA_FAIL_ARMED"
             ;;
         esac
       done
@@ -78,6 +94,18 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/awk" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ -f "${FM_FAKE_TRACE_METADATA_FAIL_ARMED:-/nonexistent}" ] \
+   && [ "${1:-}" = '-F=' ] && [ "${2:-}" = '$1 != "traceparent"' ]; then
+  rm -f "$FM_FAKE_TRACE_METADATA_FAIL_ARMED"
+  exit 1
+fi
+exec /usr/bin/awk "$@"
+SH
+  chmod +x "$fakebin/awk"
+  fm_test_fake_tmux_agent_ps "$fakebin"
   fm_fake_exit0 "$fakebin" treehouse
   printf '%s\n' "$fakebin"
 }
@@ -117,6 +145,7 @@ run_spawn() {
     FM_FAKE_TRACEPARENT_SEND_FAIL="${FM_FAKE_TRACEPARENT_SEND_FAIL:-0}" \
     FM_FAKE_TRACEPARENT_SEND_UNSAFE="${FM_FAKE_TRACEPARENT_SEND_UNSAFE:-0}" \
     FM_FAKE_TRACE_METADATA_APPEND_FAIL="${FM_FAKE_TRACE_METADATA_APPEND_FAIL:-0}" \
+    FM_FAKE_TRACE_METADATA_FAIL_ARMED="$home/state/.trace-metadata-fail-armed" \
     FM_FAKE_META_PATH="$home/state/$1.meta" \
     FM_FAKE_LAUNCH_LOG="$launchlog" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" --mode no-mistakes --yolo off 2>&1
@@ -134,6 +163,22 @@ run_spawn_tc() {
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$launchlog" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" --mode no-mistakes --yolo off 2>&1
+}
+
+run_relaunch() {
+  local home=$1 wt=$2 fakebin=$3 launchlog=$4 id=$5
+  : > "$launchlog"
+  env -u FM_TRACE_CONTEXT \
+    FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_FAKE_TRACE_METADATA_APPEND_FAIL=0 \
+    FM_FAKE_TRACE_METADATA_FAIL_ARMED="$home/state/.trace-metadata-fail-armed" \
+    FM_FAKE_TMUX_AGENT_STOPPED_MARKER="$home/state/.trace-relaunch-agent-stopped" \
+    FM_FAKE_META_PATH="$home/state/$id.meta" \
+    FM_FAKE_LAUNCH_LOG="$launchlog" PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" --relaunch 2>&1
 }
 
 start_trace_session() {
@@ -400,7 +445,8 @@ test_relaunch_reuses_recorded_carrier() {
   # Relaunch the same task: the recorded carrier must be reused verbatim for both
   # the meta and the injected export, so an observer keeps one identity across
   # restarts.
-  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID" "$PROJ_DIR")
+  : > "$HOME_DIR/state/.trace-relaunch-agent-stopped"
+  out=$(run_relaunch "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$CASE_ID")
   status=$?
   expect_code 0 "$status" "relaunch spawn should succeed"
   assert_contains "$out" "($CASE_ID)" "relaunch spawn should report success"
@@ -534,7 +580,8 @@ test_two_routed_tasks_through_one_secondmate_root_distinct_traces() {
 
   # Same environment, same task: a relaunch must reuse task A's recorded
   # carrier verbatim, so the per-task boundary never costs recovery identity.
-  out=$(TRACEPARENT="$sm_tp" run_spawn "$sm" "$wt_a" "$fakebin" "$log_a" "$id_a" "$proj_a")
+  : > "$sm/state/.trace-relaunch-agent-stopped"
+  out=$(TRACEPARENT="$sm_tp" run_relaunch "$sm" "$wt_a" "$fakebin" "$log_a" "$id_a")
   status=$?
   expect_code 0 "$status" "routed task A relaunch should succeed"
   relaunch_tp=$(meta_traceparent "$sm/state/$id_a.meta")

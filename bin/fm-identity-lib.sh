@@ -362,10 +362,15 @@ fm_identity_backend_of_meta() {
 }
 
 fm_identity_target_of_meta() {
-  local remote
+  local remote id
   remote=$(fm_identity_meta_value "$1" remote_host)
   if [ -n "$remote" ]; then
     fm_identity_meta_value "$1" remote_target
+    return
+  fi
+  id=$(fm_identity_meta_value "$1" endpoint_task_id)
+  if [ -n "$id" ] && fm_identity_validate_pending_tmux_endpoint_ownership "$1" "$id"; then
+    fm_identity_meta_value "$1" tmux_pane_id
     return
   fi
   if declare -F fm_backend_target_of_meta >/dev/null 2>&1; then
@@ -418,6 +423,33 @@ fm_identity_harness_session_of_meta() {
   printf '%s' "$found"
 }
 
+fm_identity_validate_pending_tmux_endpoint_ownership() {  # <meta> <task-id>
+  local meta=$1 id=$2 backend_count backend binding window pane tty status digits key
+  backend_count=$(grep -c '^backend=' "$meta" 2>/dev/null || true)
+  case "$backend_count" in
+    0) backend=tmux ;;
+    1) backend=$(fm_identity_meta_value "$meta" backend) ;;
+    *) return 1 ;;
+  esac
+  [ "$backend" = tmux ] || return 1
+  for key in window endpoint_task_id tmux_pane_id tmux_pane_tty tmux_identity_status; do
+    [ "$(grep -c "^$key=" "$meta" 2>/dev/null || true)" -eq 1 ] || return 1
+  done
+  for key in tmux_agent_pid tmux_agent_start tmux_agent_comm tmux_agent_argv0; do
+    [ "$(grep -c "^$key=" "$meta" 2>/dev/null || true)" -eq 0 ] || return 1
+  done
+  binding=$(fm_identity_meta_value "$meta" endpoint_task_id)
+  window=$(fm_identity_meta_value "$meta" window)
+  pane=$(fm_identity_meta_value "$meta" tmux_pane_id)
+  tty=$(fm_identity_meta_value "$meta" tmux_pane_tty)
+  status=$(fm_identity_meta_value "$meta" tmux_identity_status)
+  digits=${pane#%}
+  case "$digits" in ''|*[!0-9]*) return 1 ;; esac
+  case "$tty" in /dev/*) ;; *) return 1 ;; esac
+  [ "$binding" = "$id" ] && [ "$window" = "$pane" ] && [ "$status" = pending ] \
+    && fm_identity_value_safe "$tty"
+}
+
 fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
   local meta=$1 id=$2 remote binding backend target
   remote=$(fm_identity_meta_value "$meta" remote_host)
@@ -433,7 +465,8 @@ fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
     fm_identity_error "shared backend endpoint validation is unavailable for task $id"
     return 1
   }
-  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1
+  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1 \
+    || fm_identity_validate_pending_tmux_endpoint_ownership "$meta" "$id"
 }
 
 fm_identity_write_task_record() {  # <record> <id> <callsign> <status> <meta|empty> <created> [retired-file]

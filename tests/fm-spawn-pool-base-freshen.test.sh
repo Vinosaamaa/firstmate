@@ -287,7 +287,8 @@ strand_submodule_pin_via_spawn() {  # <seed-id>
   out=$(run_spawn "$id" --mode no-mistakes --yolo off)
   status=$?
   expect_code 0 "$status" "the spawn that moves the submodule pin should succeed"
-  assert_contains "$out" "spawned $id" "the spawn that moves the submodule pin did not report success"
+  assert_contains "$out" "($id) harness=codex" \
+    "the spawn that moves the submodule pin did not report names-first success"
   [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$ADVANCED_SHA" ] \
     || fail "the first spawn did not move the pooled base across the moved submodule pin"
   [ "$(git -C "$POOL_DIR/ui" rev-parse HEAD)" = "$SUBPIN1" ] \

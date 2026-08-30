@@ -93,9 +93,10 @@ fm_test_fake_gh_axi() {
 
 # fm_test_fake_tmux_spawn <fakebin>
 # Spawn-world tmux: pane_current_path from FM_FAKE_PANE_PATH, session named
-# firstmate, window ops succeed, send-keys succeed. When FM_FAKE_LAUNCH_LOG is
-# set, each send-keys -l payload is appended one per line. Optional
-# FM_FAKE_DUPLICATE_WINDOW is printed from list-windows.
+# firstmate, stable window/pane/TTY identities, window ops succeed, and
+# send-keys succeed. When FM_FAKE_LAUNCH_LOG is set, each send-keys -l payload
+# is appended one per line. Optional FM_FAKE_DUPLICATE_WINDOW is printed from
+# list-windows.
 #
 # The pane path defaults to empty when FM_FAKE_PANE_PATH is unset. Window
 # cleanup and option operations are no-ops. Launch logging is env-gated, so
@@ -107,6 +108,8 @@ fm_test_fake_tmux_spawn() {
 set -u
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_id}|#{pane_tty}"*) printf '%%1|/dev/ttys999\n'; exit 0 ;;
+  *"#{pane_id}"*) printf '%%1\n'; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -116,7 +119,8 @@ case "${1:-}" in
     fi
     exit 0
     ;;
-  has-session|new-session|new-window|kill-window|set-window-option) exit 0 ;;
+  new-window) printf '@1\n'; exit 0 ;;
+  has-session|new-session|kill-window|set-window-option) exit 0 ;;
   send-keys)
     if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
       prev=
@@ -133,6 +137,35 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+}
+
+# fm_test_fake_tmux_agent_ps <fakebin>
+# Spawn-world ps: one foreground Codex process on the stable fake pane TTY.
+# The harness name is deliberately generic because these tests exercise spawn
+# mechanics, while harness-specific launch construction is asserted separately.
+fm_test_fake_tmux_agent_ps() {
+  local fakebin=$1
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+agent=codex
+if [ -n "${FM_FAKE_TMUX_AGENT_STOPPED_MARKER:-}" ] \
+   && [ -f "$FM_FAKE_TMUX_AGENT_STOPPED_MARKER" ]; then
+  agent=zsh
+fi
+case "$*" in
+  *'-t ttys999 '*'pid=,pgid=,tpgid=,comm='*)
+    printf '424242 424242 424242 %s\n' "$agent"
+    ;;
+  *'-t ttys999 '*'pid=,pgid=,tpgid='*) printf '424242 424242 424242\n' ;;
+  *'-p 424242 '*'pid=,lstart=,tty=,comm='*)
+    printf '424242 Mon Jan 1 00:00:00 2026 ttys999 %s\n' "$agent"
+    ;;
+  *'-p 424242 '*'args='*) printf '%s\n' "$agent" ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
 }
 
 # fm_test_fake_tmux_send <fakebin>
@@ -251,6 +284,7 @@ fm_test_make_spawn_fakebin() {
   shift
   fakebin=$(fm_fakebin "$dir")
   fm_test_fake_tmux_spawn "$fakebin"
+  fm_test_fake_tmux_agent_ps "$fakebin"
   fm_fake_exit0 "$fakebin" treehouse "$@"
   printf '%s\n' "$fakebin"
 }

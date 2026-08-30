@@ -720,7 +720,8 @@ test_peek_send_and_crew_state_route_through_orca_meta() {
   fm_git_init_commit "$wt"
   state="$TMP_ROOT/io-state"; mkdir -p "$state"
   fm_write_meta "$state/$id.meta" \
-    "window=fm-$id" "endpoint_task_id=$id" "terminal=term-io" "worktree=$wt" "project=$wt" "harness=claude" "kind=scout" "backend=orca"
+    "window=fm-$id" "endpoint_task_id=$id" "terminal=term-io" "orca_worktree_id=wt-io" \
+    "worktree=$wt" "project=$wt" "harness=claude" "kind=scout" "backend=orca"
   touch "$state/.last-watcher-beat"
   orca_case io-path
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
@@ -1177,6 +1178,9 @@ test_secondmate_force_teardown_removes_orca_child_via_orca() {
   childwt="$TMP_ROOT/orca-child-worktree"
   child_id="orcachildz6"
   mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/projects"
+  home=$(cd "$home" && pwd -P)
+  subhome=$(cd "$subhome" && pwd -P)
+  childproj="$subhome/projects/alpha"
   printf 'domain\n' > "$subhome/.fm-secondmate-home"
   fm_git_worktree "$childproj" "$childwt" "fm/$child_id"
   fm_write_meta "$home/state/domain.meta" \
@@ -1222,6 +1226,9 @@ test_secondmate_force_teardown_refuses_orca_child_id_path_mismatch() {
   other_wt="$TMP_ROOT/orca-child-mismatch-other-worktree"
   child_id="orcachildmismatchz1"
   mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/projects"
+  home=$(cd "$home" && pwd -P)
+  subhome=$(cd "$subhome" && pwd -P)
+  childproj="$subhome/projects/alpha"
   printf 'domain\n' > "$subhome/.fm-secondmate-home"
   fm_git_worktree "$childproj" "$childwt" "fm/$child_id"
   git -C "$childproj" worktree add --quiet -b "fm/$child_id-other" "$other_wt"

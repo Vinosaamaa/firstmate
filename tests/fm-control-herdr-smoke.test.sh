@@ -103,7 +103,7 @@ run_control() {
 
 OUT=$(run_control hsmoke exit) || fail "exit against an agent-free herdr pane should be idempotent success: $OUT"
 case "$OUT" in
-  "already-stopped hsmoke"*) : ;;
+  "already-stopped "*" (hsmoke) "*) : ;;
   *) fail "an agent-free herdr pane should report already-stopped, got: $OUT" ;;
 esac
 pass "real herdr: exit on a pane with no registered agent is idempotent success"
