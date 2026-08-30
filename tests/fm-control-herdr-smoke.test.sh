@@ -217,6 +217,16 @@ sed -e 's/^harness=claude$/harness=codex/' \
 printf 'spawn_gen=herdr-initial\n' >> "$HOME_DIR/state/hsmoke.meta.tmp"
 mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
 
+# The setup above deliberately advances the task's endpoint/harness lifecycle
+# metadata. Keep its persistent callsign binding on that exact same incarnation,
+# as the real relaunch/resume continuation does before routing by task id.
+(
+  export FM_HOME="$HOME_DIR"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-identity-lib.sh"
+  fm_identity_ensure_task_from_meta "$HOME_DIR/state/hsmoke.meta" hsmoke rebind >/dev/null
+) || fail "could not rebind the persistent callsign to the Codex resume fixture"
+
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-wake-lib.sh"
 # shellcheck source=/dev/null
