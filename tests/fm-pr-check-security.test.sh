@@ -599,7 +599,7 @@ SH
       || fail "path-safe legacy task ID did not publish an authenticated poll"
     FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$dir/fakebin:$BASE_PATH" \
       "$TEARDOWN" "$id" --force > "$dir/teardown.out" 2> "$dir/teardown.err" \
-      || fail "legacy path-safe task ID could not be torn down"
+      || fail "legacy path-safe task ID could not be torn down: $(cat "$dir/teardown.err")"
     [ ! -e "$dir/home/state/$id.meta" ] || fail "legacy task teardown retained metadata"
   done
   pass "valid direct and merge flows record exact metadata and reject multiline head metadata"

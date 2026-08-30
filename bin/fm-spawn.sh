@@ -1112,12 +1112,19 @@ CALLSIGN=
 IDENTITY_FRESH_RESERVED=0
 IDENTITY_REBIND_ALLOWED=0
 if [ "$RELAUNCH" -eq 0 ]; then
-  if [ "$KIND" = secondmate ] && [ -f "$STATE/$ID.meta" ]; then
-    # Bootstrap's established secondmate recovery path predates --relaunch and
-    # intentionally invokes an ordinary --secondmate spawn against the durable
-    # task record. It is a continuation, not a fresh task: validate/adopt the
-    # existing binding now and publish its replacement endpoint below.
+  if [ -f "$STATE/$ID.meta" ]; then
+    # Established recovery paths may invoke an ordinary spawn against a durable
+    # task record after its backend session lost the registered agent. This is a
+    # continuation, not a second fresh task: validate/adopt the existing binding
+    # now; the backend recovery checks below still refuse a live duplicate.
     CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1) || exit 1
+    IDENTITY_REBIND_ALLOWED=1
+  elif [ "$KIND" = secondmate ] && [ -f "$(fm_identity_task_record "$ID")" ]; then
+    # Registry-backed secondmate recovery may intentionally retire volatile
+    # endpoint metadata while keeping the durable home and callsign. Reuse that
+    # active historical binding; the registry/home checks already resolved the
+    # exact report above, and replacement publication rebinds it atomically.
+    CALLSIGN=$(fm_identity_display_callsign "$ID")
     IDENTITY_REBIND_ALLOWED=1
   else
     CALLSIGN=$(fm_identity_reserve_fresh_task "$ID") || exit 1

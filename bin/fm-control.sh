@@ -190,7 +190,33 @@ case "$RAW_ID" in
     fi
     ;;
 esac
-ID=$(fm_identity_resolve_selector "$STATE" "$RAW_ID") || exit 1
+EXACT_RESUME_RECOVERY=0
+if [ "$VERB" = relaunch ] && [ -f "$STATE/$RAW_ID.meta" ]; then
+  for control_raw_arg in "$@"; do
+    if [ "$control_raw_arg" = --resume ]; then
+      EXACT_RESUME_RECOVERY=1
+      break
+    fi
+  done
+fi
+if [ -f "$STATE/$RAW_ID.meta" ]; then
+  ID=$RAW_ID
+  CONTROL_LOCK="$STATE/.control-$ID.lock"
+  trap control_cleanup EXIT
+  fm_lock_try_acquire "$CONTROL_LOCK" \
+    || die "another lifecycle action is already running for task $ID"
+  CONTROL_LOCK_HELD=1
+fi
+if [ "$EXACT_RESUME_RECOVERY" = 1 ]; then
+  # A crash after replacement metadata publication can temporarily leave the
+  # exact task record ahead of its persistent identity binding. The locked
+  # resume reconciler below is the single path allowed to restore that proven
+  # pre-launch state; callsign selectors and every other verb still require a
+  # valid current binding before they can resolve.
+  ID=$RAW_ID
+else
+  ID=$(fm_identity_resolve_selector "$STATE" "$RAW_ID") || exit 1
+fi
 CALLSIGN=$(fm_identity_display_callsign "$ID")
 
 if ! fm_control_verb_allowed "$VERB"; then
@@ -297,9 +323,11 @@ fi
 fm_lease_guard "$ID" "lifecycle control (fm-control)"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 trap control_cleanup EXIT
-fm_lock_try_acquire "$CONTROL_LOCK" \
-  || die "another lifecycle action is already running for task $ID"
-CONTROL_LOCK_HELD=1
+if [ "$CONTROL_LOCK_HELD" != 1 ]; then
+  fm_lock_try_acquire "$CONTROL_LOCK" \
+    || die "another lifecycle action is already running for task $ID"
+  CONTROL_LOCK_HELD=1
+fi
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ]; then
   die "no active task for $CALLSIGN ($ID) in $STATE"
@@ -954,7 +982,7 @@ codex_resume_reconcile_prior_attempt() {
 }
 
 do_relaunch() {
-  local exit_result state note_line attempt_phase current_tx
+  local exit_result state note_line attempt_phase current_tx resolved_id
   local -a spawn_args
 
   require_state_verified_backend relaunch
@@ -965,6 +993,10 @@ do_relaunch() {
     [ "$TARGET_HARNESS" = codex ] \
       || die "--resume cannot switch task $ID away from Codex; exact-session resume requires both the recorded and target harness to be codex"
     codex_resume_reconcile_prior_attempt
+    resolved_id=$(fm_identity_resolve_selector "$STATE" "$ID") \
+      || die "task $ID's safely recovered Codex resume metadata still conflicts with its persistent identity"
+    [ "$resolved_id" = "$ID" ] \
+      || die "task $ID's safely recovered Codex resume metadata resolved to another task"
   fi
 
   case "$KIND" in

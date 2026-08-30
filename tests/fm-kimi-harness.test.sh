@@ -441,6 +441,9 @@ test_kimi_teardown_removes_pointer_and_registry_token() {
   out=$(HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_TMUX_CALL_LOG="$CASE_DIR/tmux-calls.log" \
+    FM_FAKE_KIMI_STATE="$CASE_DIR/kimi.state" \
+    FM_FAKE_BRIEF_REAL="$(cd "$HOME_DIR/data/$id" && pwd -P)/brief.md" \
     FM_SPAWN_NO_GUARD=1 PATH="$FAKEBIN_DIR:$BASE_PATH" \
     "$TEARDOWN" "$id" --force 2>&1) || rc=$?
   expect_code 0 "$rc" "Kimi teardown failed"$'\n'"$out"

@@ -69,8 +69,9 @@ write_session_log() {
 # --- spawn scaffolding ------------------------------------------------------
 
 make_spawn_fakebin() {
-  local dir=$1 fakebin
+  local dir=$1 fakebin real_ps
   fakebin=$(fm_fakebin "$dir")
+  real_ps=$(command -v ps)
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -109,7 +110,18 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_test_fake_tmux_agent_ps "$fakebin"
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+case "\$*" in
+  *'-t ttys999 '*'pid=,pgid=,tpgid=,comm='*) printf '424242 424242 424242 codex\n' ;;
+  *'-t ttys999 '*'pid=,pgid=,tpgid='*) printf '424242 424242 424242\n' ;;
+  *'-p 424242 '*'pid=,lstart=,tty=,comm='*) printf '424242 Mon Jan 1 00:00:00 2026 ttys999 codex\n' ;;
+  *'-p 424242 '*'args='*) printf 'codex\n' ;;
+  *) exec "$real_ps" "\$@" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
   cp "$(command -v bash)" "$fakebin/muse-bin-test-version"
   cat > "$fakebin/muse" <<'SH'
 #!/usr/bin/env bash

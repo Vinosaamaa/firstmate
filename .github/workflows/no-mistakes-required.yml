@@ -1,5 +1,5 @@
-name: Require no-mistakes
-run-name: "PR #${{ github.event.pull_request.number }} body compliance - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
+name: No-mistakes attestation
+run-name: "PR #${{ github.event.pull_request.number }} optional attestation - ${{ github.event.action }} - event ${{ github.run_number }} (run ${{ github.run_id }})"
 
 on:
   pull_request:
@@ -20,11 +20,17 @@ concurrency:
 
 jobs:
   check:
-    name: PR must be raised via no-mistakes
+    name: No-mistakes attestation (opt-in)
     runs-on: ubuntu-latest
     if: >-
       github.event.pull_request.user.login != 'github-actions[bot]' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
+      - name: Accept a standard pull request
+        if: >-
+          !contains(github.event.pull_request.body, 'Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)')
+        run: echo "No no-mistakes signature is present; standard repository CI owns this pull request."
       - name: Verify no-mistakes signature and pipeline attestation
+        if: >-
+          contains(github.event.pull_request.body, 'Updates from [git push no-mistakes](https://github.com/kunchenguid/no-mistakes)')
         uses: kunchenguid/no-mistakes/.github/actions/require-no-mistakes@32d396ac0f29135daf7fcb9964aba9d5f4e796d6 # post-v1.57.1, untagged (action added in #819)

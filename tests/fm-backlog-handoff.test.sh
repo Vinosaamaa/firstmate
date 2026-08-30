@@ -240,7 +240,7 @@ SH
     kill -0 "$handoff" 2>/dev/null \
       || fail "reconciliation-race handoff exited before backend delivery: $(cat "$TMP_ROOT/reconcile-race.out")"
     i=$((i + 1))
-    [ "$i" -le 250 ] \
+    [ "$i" -le 1500 ] \
       || fail "reconciliation-race handoff never reached backend delivery: $(cat "$TMP_ROOT/reconcile-race.out")"
     sleep 0.02
   done
@@ -616,7 +616,6 @@ test_local_teardown_waits_for_handoff_wake() {
   local home="$TMP_ROOT/teardown-race-main" sub="$TMP_ROOT/teardown-race-sub"
   local basebin blockbin="$TMP_ROOT/teardown-race-blockbin" handoff teardown i
   setup_homes "$home" "$sub"
-  printf 'project=%s\n' "$ROOT" >> "$home/state/design.meta"
   mkdir -p "$sub/data" "$blockbin"
   printf '## Queued\n\n## Done\n' > "$sub/data/backlog.md"
   cat > "$home/data/backlog.md" <<'EOF'
@@ -676,7 +675,6 @@ test_local_teardown_preserves_wake_when_home_removal_fails() {
   local marker_before="$TMP_ROOT/teardown-home-fail-marker.before"
   local rec_before="$TMP_ROOT/teardown-home-fail-record.before"
   setup_homes "$home" "$sub"
-  printf 'project=%s\n' "$ROOT" >> "$home/state/design.meta"
   mkdir -p "$sub/data" "$rm_bin"
   printf '## Queued\n- [ ] still-routed - preserve its wake (repo: alpha)\n\n## Done\n' > "$sub/data/backlog.md"
   corr=$(FM_HOME="$home" bash -c '

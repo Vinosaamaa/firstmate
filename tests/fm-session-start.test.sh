@@ -1197,7 +1197,7 @@ EOF
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   assert_contains "$out" "Orphan status logs (state/*.status without matching .meta)" "digest did not label orphan status logs"
-  assert_contains "$out" "--- task-orphan ---" "digest did not print the orphan status id"
+  assert_contains "$out" "(task-orphan) ---" "digest did not print the orphan status id"
   assert_contains "$out" "orphan: step 6" "orphan status tail missing the newest line"
   assert_not_contains "$out" "orphan: step 1" "orphan status tail was not bounded"
   assert_contains "$out" "$home/state/task-orphan.status" "orphan status tail did not print the full log path"
