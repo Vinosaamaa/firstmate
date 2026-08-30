@@ -96,8 +96,16 @@ fm_identity_name_valid() {  # <name>
 
 fm_identity_task_id_valid() {  # <task-id>
   local id=${1:-} LC_ALL=C
-  [ "${#id}" -le 64 ] || return 1
+  # Operational lifecycle entrypoints historically accepted every path-safe
+  # task id. Keep those existing records recoverable and archivable; fresh
+  # task creation retains its separate 64-byte bound below.
+  [ "${#id}" -le 240 ] || return 1
   case "$id" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+}
+
+fm_identity_fresh_task_id_valid() {  # <task-id>
+  fm_identity_task_id_valid "$1" || return 1
+  [ "${#1}" -le 64 ]
 }
 
 fm_identity_name_reserved() {  # <name>
@@ -526,7 +534,7 @@ fm_identity_record_core_valid() {  # <record> <id>
 
 fm_identity_reserve_fresh_task() {  # <task-id>
   local id=$1 record callsign created status
-  fm_identity_task_id_valid "$id" || { fm_identity_error "task id '$id' is invalid for a persistent callsign binding"; return 1; }
+  fm_identity_fresh_task_id_valid "$id" || { fm_identity_error "task id '$id' is invalid for a fresh persistent callsign binding"; return 1; }
   record=$(fm_identity_task_record "$id")
   fm_identity_lock_acquire || return 1
   # Reserve home and task identity under one critical section. This keeps a
@@ -563,6 +571,30 @@ fm_identity_reserve_fresh_task() {  # <task-id>
   created=$(fm_identity_now)
   fm_identity_write_task_record "$record" "$id" "$callsign" provisioning "" "$created" \
     || { fm_identity_lock_release; return 1; }
+  fm_identity_lock_release
+  printf '%s' "$callsign"
+}
+
+fm_identity_existing_task_callsign() {  # <task-id>
+  local id=$1 record status callsign
+  fm_identity_task_id_valid "$id" || return 1
+  record=$(fm_identity_task_record "$id") || return 1
+  fm_identity_lock_acquire || return 1
+  if ! fm_identity_record_core_valid "$record" "$id"; then
+    fm_identity_lock_release
+    fm_identity_error "identity record for task $id is malformed or belongs to another home; refusing recovery"
+    return 1
+  fi
+  status=$(fm_identity_record_value "$record" status)
+  callsign=$(fm_identity_record_value "$record" callsign)
+  case "$status" in
+    provisioning|active) ;;
+    *)
+      fm_identity_lock_release
+      fm_identity_error "task $id is archived as $callsign; refusing to reactivate a historical identity"
+      return 1
+      ;;
+  esac
   fm_identity_lock_release
   printf '%s' "$callsign"
 }
@@ -617,7 +649,8 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
     if [ "$status" = active ]; then
       old_worktree=$(fm_identity_record_value "$record" worktree 2>/dev/null || true)
       new_worktree=$(fm_identity_worktree_of_meta "$meta" 2>/dev/null || true)
-      if [ -n "$old_worktree" ] && [ "$old_worktree" != "$new_worktree" ]; then
+      if [ -n "$old_worktree" ] && [ "$old_worktree" != "$new_worktree" ] \
+         && [ "$mode" != rebind ]; then
         fm_identity_lock_release
         fm_identity_error "task $id's callsign $callsign is bound to worktree '$old_worktree', not '$new_worktree'; refusing to rebind it"
         return 1

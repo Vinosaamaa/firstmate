@@ -1117,7 +1117,11 @@ if [ "$RELAUNCH" -eq 0 ]; then
     # task record after its backend session lost the registered agent. This is a
     # continuation, not a second fresh task: validate/adopt the existing binding
     # now; the backend recovery checks below still refuse a live duplicate.
-    CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1) || exit 1
+    if [ -f "$(fm_identity_task_record "$ID")" ]; then
+      CALLSIGN=$(fm_identity_existing_task_callsign "$ID") || exit 1
+    else
+      CALLSIGN=$(fm_identity_ensure_task_from_meta "$STATE/$ID.meta" "$ID" 1) || exit 1
+    fi
     IDENTITY_REBIND_ALLOWED=1
   elif [ "$KIND" = secondmate ] && [ -f "$(fm_identity_task_record "$ID")" ]; then
     # Registry-backed secondmate recovery may intentionally retire volatile

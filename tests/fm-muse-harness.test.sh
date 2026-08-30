@@ -476,7 +476,7 @@ exit 0
 SH
   chmod +x "$fakebin/tmux"
   fm_write_meta "$home/state/$id.meta" \
-    "window=fm-send:0" "endpoint_task_id=$id" "worktree=$case_dir" \
+    "window=fm-send:fm-$id" "worktree=$case_dir" \
     "project=$case_dir" "harness=$harness" "kind=ship" "mode=no-mistakes" "yolo=off"
   printf '%s\n' "$case_dir|$home|$fakebin|$id"
 }

@@ -116,7 +116,15 @@ fm_codex_session_meta_field() {  # <meta> <key>
 }
 
 fm_codex_session_file_mode() {  # <path>
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  local mode
+  # GNU stat treats BSD's format operand as another path. It can therefore
+  # print filesystem details for the real record before returning failure;
+  # printing the fallback inline would concatenate that residue with "600".
+  # Capture each dialect first so only the successful result reaches callers.
+  mode=$(stat -f '%Lp' "$1" 2>/dev/null) \
+    || mode=$(stat -c '%a' "$1" 2>/dev/null) \
+    || return 1
+  printf '%s' "$mode"
 }
 
 fm_codex_session_record_regular() {  # <record>
