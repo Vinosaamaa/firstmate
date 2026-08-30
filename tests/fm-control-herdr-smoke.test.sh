@@ -220,11 +220,11 @@ mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
 # The setup above deliberately advances the task's endpoint/harness lifecycle
 # metadata. Keep its persistent callsign binding on that exact same incarnation,
 # as the real relaunch/resume continuation does before routing by task id.
-(
+RESUME_CALLSIGN=$(
   export FM_HOME="$HOME_DIR"
   # shellcheck source=/dev/null
   . "$ROOT/bin/fm-identity-lib.sh"
-  fm_identity_ensure_task_from_meta "$HOME_DIR/state/hsmoke.meta" hsmoke rebind >/dev/null
+  fm_identity_ensure_task_from_meta "$HOME_DIR/state/hsmoke.meta" hsmoke rebind
 ) || fail "could not rebind the persistent callsign to the Codex resume fixture"
 
 # shellcheck source=/dev/null
@@ -251,7 +251,7 @@ fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" \
 OUT=$(run_control hsmoke relaunch --resume --note "continue after isolated Herdr restart") \
   || fail "exact Codex resume in the recorded Herdr endpoint should succeed: $OUT"
 case "$OUT" in
-  *"resumed hsmoke session=$CODEX_SESSION_ID"*"backend=herdr endpoint=$SESSION:$PANE_ID"*) : ;;
+  *"resumed $RESUME_CALLSIGN (hsmoke) session=$CODEX_SESSION_ID"*"backend=herdr endpoint=$SESSION:$PANE_ID"*) : ;;
   *) fail "Herdr exact resume should report its session and exact endpoint, got: $OUT" ;;
 esac
 grep -F 'resume ' "$FAKE_CODEX_LOG" >/dev/null \
