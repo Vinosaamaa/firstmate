@@ -2403,6 +2403,8 @@ if [ "$BACKEND" = tmux ] && [ "$RELAUNCH" -eq 1 ]; then
   }
   TMUX_PANE_ID=$FM_BACKEND_TMUX_PANE_ID
   TMUX_PANE_TTY=$FM_BACKEND_TMUX_PANE_TTY
+  T=$TMUX_PANE_ID
+  WT_TARGET=$T
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \

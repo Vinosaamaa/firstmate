@@ -702,8 +702,8 @@ fm_identity_ensure_legacy_archive() {  # <task-id>
   printf '%s' "$callsign"
 }
 
-fm_identity_archive_task() {  # <meta> <task-id>
-  local meta=$1 id=$2 record callsign created retired status
+fm_identity_archive_task() {  # <meta> <task-id> [prevalidated]
+  local meta=$1 id=$2 validation=${3:-} record callsign created retired status
   record=$(fm_identity_task_record "$id")
   [ -f "$record" ] || fm_identity_ensure_task_from_meta "$meta" "$id" 1 >/dev/null || return 1
   fm_identity_lock_acquire || return 1
@@ -714,10 +714,18 @@ fm_identity_archive_task() {  # <meta> <task-id>
   }
   callsign=$(fm_identity_record_value "$record" callsign)
   status=$(fm_identity_record_value "$record" status)
-  if [ "$status" = active ] && ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
-    fm_identity_lock_release
-    fm_identity_error "task $id's callsign binding conflicts with its cleanup metadata; refusing historical rebinding"
-    return 1
+  if [ "$status" = active ]; then
+    if [ "$validation" = prevalidated ]; then
+      fm_identity_active_binding_fields_match "$record" "$meta" "$id" || {
+        fm_identity_lock_release
+        fm_identity_error "task $id's callsign binding changed after cleanup ownership was validated; refusing historical rebinding"
+        return 1
+      }
+    elif ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
+      fm_identity_lock_release
+      fm_identity_error "task $id's callsign binding conflicts with its cleanup metadata; refusing historical rebinding"
+      return 1
+    fi
   fi
   created=$(fm_identity_record_value "$record" created_at 2>/dev/null || fm_identity_now)
   retired=$(mktemp "${TMPDIR:-/tmp}/fm-identity-retired.XXXXXXXX") || { fm_identity_lock_release; return 1; }
@@ -740,11 +748,10 @@ fm_identity_display_callsign() {  # <task-id>
   fi
 }
 
-fm_identity_validate_active_binding() {  # <record> <meta> <task-id>
+fm_identity_active_binding_fields_match() {  # <record> <meta> <task-id>
   local record=$1 meta=$2 id=$3 status worktree backend endpoint endpoint_session harness_session spawn_gen
   local expected_worktree expected_backend expected_endpoint expected_endpoint_session expected_harness_session expected_spawn_gen
   fm_identity_record_core_valid "$record" "$id" || return 1
-  fm_identity_validate_meta_endpoint_ownership "$meta" "$id" || return 1
   status=$(fm_identity_record_value "$record" status)
   [ "$status" = active ] || return 1
   worktree=$(fm_identity_record_value "$record" worktree 2>/dev/null || true)
@@ -764,6 +771,12 @@ fm_identity_validate_active_binding() {  # <record> <meta> <task-id>
     && [ "$endpoint_session" = "$expected_endpoint_session" ] \
     && [ "$harness_session" = "$expected_harness_session" ] \
     && [ "$spawn_gen" = "$expected_spawn_gen" ]
+}
+
+fm_identity_validate_active_binding() {  # <record> <meta> <task-id>
+  local record=$1 meta=$2 id=$3
+  fm_identity_validate_meta_endpoint_ownership "$meta" "$id" || return 1
+  fm_identity_active_binding_fields_match "$record" "$meta" "$id"
 }
 
 fm_identity_selector_conflicts_with_other_record() {  # <selector> <resolved-task-id>

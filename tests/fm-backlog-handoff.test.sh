@@ -31,11 +31,13 @@ setup_homes() {
     "$id" "$sub_abs" > "$home/data/secondmates.md"
   cat > "$home/state/$id.meta" <<EOF
 window=firstmate:fm-$id
+endpoint_task_id=$id
 kind=secondmate
 harness=claude
 backend=tmux
 home=$sub_abs
 worktree=$sub_abs
+project=$sub_abs
 EOF
 }
 
@@ -64,11 +66,13 @@ test_handoff_wakes_live_local_receiver() {
   mkdir -p "$sub/state" "$sub/data"
   cat > "$home/state/design.meta" <<EOF
 window=firstmate:fm-design
+endpoint_task_id=design
 kind=secondmate
 harness=claude
 backend=tmux
 home=$sub
 worktree=$sub
+project=$sub
 EOF
   cat > "$home/data/backlog.md" <<'EOF'
 ## Queued
@@ -133,11 +137,13 @@ EOF
 
   cat > "$home/state/design.meta" <<EOF
 window=firstmate:fm-design
+endpoint_task_id=design
 kind=secondmate
 harness=claude
 backend=tmux
 home=$sub
 worktree=$sub
+project=$sub
 EOF
   : > "$TMP_ROOT/default-tmux.log"
   FM_HOME="$home" "$ROOT/bin/fm-backlog-handoff.sh" design retry-item > "$TMP_ROOT/retry-wake.out" 2>&1 \
@@ -231,9 +237,11 @@ SH
   handoff=$!
   i=0
   while [ ! -f "$TMP_ROOT/reconcile-race.entered" ]; do
-    kill -0 "$handoff" 2>/dev/null || fail "reconciliation-race handoff exited before backend delivery"
+    kill -0 "$handoff" 2>/dev/null \
+      || fail "reconciliation-race handoff exited before backend delivery: $(cat "$TMP_ROOT/reconcile-race.out")"
     i=$((i + 1))
-    [ "$i" -le 250 ] || fail "reconciliation-race handoff never reached backend delivery"
+    [ "$i" -le 250 ] \
+      || fail "reconciliation-race handoff never reached backend delivery: $(cat "$TMP_ROOT/reconcile-race.out")"
     sleep 0.02
   done
   corr=$(cut -d: -f2- "$home/state/.backlog-handoff-design.wake-pending")

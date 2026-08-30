@@ -226,6 +226,10 @@ for argument in "$@"; do
   previous=$argument
 done
 case "$*" in
+  *'-t ttys999 '*'pid=,pgid=,tpgid=,comm='*) printf '424242 424242 424242 pi\n'; exit 0 ;;
+  *'-t ttys999 '*'pid=,pgid=,tpgid='*) printf '424242 424242 424242\n'; exit 0 ;;
+  *'-p 424242 '*'pid=,lstart=,tty=,comm='*) printf '424242 Mon Jan 1 00:00:00 2026 ttys999 pi\n'; exit 0 ;;
+  *'-p 424242 '*'args='*) printf 'pi\n'; exit 0 ;;
   *"comm="*)
     if [ -z "${FM_FAKE_HARNESS_PID:-}" ] || [ "$pid" = "$FM_FAKE_HARNESS_PID" ] \
       || [ "$pid" = "${FM_FAKE_LIVE_HOLDER_PID:-}" ]; then
@@ -343,6 +347,9 @@ case "${1:-}" in
     done
     if [ "${target#%}" != "$target" ]; then
       case "$format" in
+        *'#{pane_id}|#{pane_tty}'*) printf '%%1|/dev/ttys999\n' ;;
+        *pane_tty*) printf '/dev/ttys999\n' ;;
+        *pane_id*) printf '%%1\n' ;;
         *pane_current_path*) printf '%s\n' "$mate_home" ;;
         *pane_current_command*) printf '%s\n' node ;;
         *) printf '%s\n' "$target" ;;
@@ -557,6 +564,10 @@ EOF
   printf '%s\n' "$id" > "$mate/.fm-secondmate-home"
   printf '# Firstmate\n' > "$mate/AGENTS.md"
   printf 'Second mate charter.\n' > "$mate/data/charter.md"
+  git -C "$mate" init -q
+  git -C "$mate" add AGENTS.md data/charter.md
+  git -C "$mate" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -qm initial
   printf '%s\n' pi > "$home/config/secondmate-harness"
   printf '%s\n' manual > "$home/config/backlog-backend"
   touch "$home/state/.last-watcher-beat"

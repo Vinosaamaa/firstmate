@@ -12,6 +12,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 # bin/fm-harness.sh checks verified ENV markers before ancestry. Muse is
 # markerless, so an inherited Cursor/Claude/Pi/Grok marker would outrank the
@@ -74,6 +76,8 @@ make_spawn_fakebin() {
 set -u
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_id}|#{pane_tty}"*) printf '%%1|/dev/ttys999\n'; exit 0 ;;
+  *"#{pane_id}"*) printf '%%1\n'; exit 0 ;;
 esac
 case "${1:-}" in
   show-environment)
@@ -83,7 +87,8 @@ case "${1:-}" in
     ;;
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  new-window) printf '@1\n'; exit 0 ;;
+  has-session|new-session|kill-window|set-window-option) exit 0 ;;
   send-keys)
     prev=
     for arg in "$@"; do
@@ -104,6 +109,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_test_fake_tmux_agent_ps "$fakebin"
   cp "$(command -v bash)" "$fakebin/muse-bin-test-version"
   cat > "$fakebin/muse" <<'SH'
 #!/usr/bin/env bash

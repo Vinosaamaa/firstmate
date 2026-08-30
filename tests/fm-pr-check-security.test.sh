@@ -567,6 +567,7 @@ SH
       "endpoint_task_id=$id" \
       "worktree=$dir/missing-worktree" \
       "project=$dir/project" \
+      'harness=claude' \
       'kind=ship' \
       'mode=local-only'
     cat > "$dir/fakebin/tmux" <<'SH'

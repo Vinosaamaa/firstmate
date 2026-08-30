@@ -24,6 +24,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-control-lib.sh"
 # shellcheck source=/dev/null
@@ -81,6 +83,7 @@ case "${1:-}" in
       case "$payload" in
         /exit|/quit)
           printf 'zsh' > "$D/command"
+          : > "$D/stopped"
           if [ "$payload" = /quit ] && [ -f "$D/session-id" ]; then
             printf 'To continue this session, run codex resume %s\n' \
               "$(cat "$D/session-id")" >> "$D/pane"
@@ -89,10 +92,12 @@ case "${1:-}" in
           ;;
         *'codex resume '*)
           printf 'codex' > "$D/command"
+          rm -f "$D/stopped"
           [ ! -e "$D/fail-resume-transport" ] || exit 1
           ;;
         *'encode launch-brief'*)
           cat "$D/becomes" > "$D/command"
+          rm -f "$D/stopped"
           [ -z "${FM_FAKE_LAUNCH_TRANSPORT_FAIL_AFTER_START:-}" ] || exit 1
           ;;
       esac
@@ -114,6 +119,9 @@ case "${1:-}" in
   display-message)
     for a in "$@"; do
       case "$a" in
+        *'#{pane_id}|#{pane_tty}'*) printf '%%1|/dev/ttys999\n'; exit 0 ;;
+        *pane_tty*) printf '/dev/ttys999\n'; exit 0 ;;
+        *pane_id*) printf '%%1\n'; exit 0 ;;
         *cursor_y*) printf '1\n'; exit 0 ;;
         *pane_current_command*) cat "$D/command"; printf '\n'; exit 0 ;;
         *pane_current_path*)
@@ -133,6 +141,7 @@ esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  fm_test_fake_tmux_agent_ps "$fb"
   cat > "$fb/sleep" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -183,6 +192,7 @@ run_control() {  # <case-dir> <args...>
   local dir=$1; shift
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
+    FM_FAKE_TMUX_AGENT_STOPPED_MARKER="$dir/fake/stopped" \
     FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
     FM_REAL_GIT="${FM_REAL_GIT:-}" FM_FAKE_GIT_FAILURE="${FM_FAKE_GIT_FAILURE:-}" \
     FM_REAL_MV="${FM_REAL_MV:-}" FM_FAKE_COMPLETE_JOURNAL_MV_FAIL="${FM_FAKE_COMPLETE_JOURNAL_MV_FAIL:-}" \
@@ -277,8 +287,8 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   expect_code 0 "$rc" "a same-harness relaunch should succeed"$'\n'"$out"
   assert_contains "$out" "relaunched" "the outcome should name the transition"
   assert_contains "$out" "(rl1) harness=claude from=claude" "the outcome should retain the task id beside its callsign"
-  [ "$(meta_field "$dir" rl1 window)" = "fmses:fm-rl1" ] \
-    || fail "the endpoint must be reused, not recreated"
+  [ "$(meta_field "$dir" rl1 window)" = "%1" ] \
+    || fail "the endpoint must migrate to the resolved stable pane, not be recreated"
   [ "$(meta_field "$dir" rl1 worktree)" = "$dir/wt" ] \
     || fail "the worktree must be reused, not reallocated"
   [ "$(meta_field "$dir" rl1 kind)" = ship ] || fail "kind must survive the relaunch"
@@ -402,7 +412,7 @@ test_codex_resume_postlaunch_uncertainty_refuses_retry() {
   assert_contains "$out" "speculative retry is refused" \
     "the failure should expose the non-retryable uncertain state"
   [ "$(grep '^state=' "$side")" = state=uncertain ] \
-    || fail "a failure after resume bytes may have launched must become uncertain"
+    || fail "a failure after resume bytes may have launched must become uncertain: $(cat "$side"); meta: $(cat "$dir/home/state/rl35.meta"); output: $out"
   count_before=$(grep -c "codex resume .*${CODEX_SESSION_ID}" "$dir/fake/literal" || true)
   rm -f "$dir/fake/fail-resume-transport"
   printf 'zsh' > "$dir/fake/command"
@@ -410,8 +420,8 @@ test_codex_resume_postlaunch_uncertainty_refuses_retry() {
   expect_code 1 "$rc" "an uncertain exact session must refuse retry"
   count_after=$(grep -c "codex resume .*${CODEX_SESSION_ID}" "$dir/fake/literal" || true)
   [ "$count_after" = "$count_before" ] || fail "uncertain retry must send no second resume command"
-  assert_contains "$out" "uncertain exact Codex resume binding" \
-    "uncertain retry should name the durable refusal, not infer safety"
+  assert_contains "$out" "stable tmux endpoint metadata" \
+    "uncertain retry should preserve the fork's exact endpoint refusal"
   pass "fm-control relaunch: post-launch uncertainty is durable and non-retryable"
 }
 

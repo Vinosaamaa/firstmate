@@ -30,12 +30,14 @@ make_main_home() {  # <name> <mate-id>
     "$id" "$abs" > "$home/data/secondmates.md"
   cat > "$home/state/$id.meta" <<META
 window=firstmate:fm-$id
+endpoint_task_id=$id
 kind=secondmate
 harness=claude
 backend=tmux
 spawn_gen=spawn-$id
 home=$abs
 worktree=$abs
+project=$abs
 META
   fakebin=$(make_fake_tmux "$TMP_ROOT/$1-fake")
   printf '%s\n' "$home" "$mate" "$fakebin"
@@ -295,11 +297,13 @@ test_the_window_is_four_hours() {
 }
 
 test_each_home_carries_its_own_cooldown() {
-  local home mate fakebin snap out
+  local home mate fakebin snap out other_home
   { read -r home; read -r mate; read -r fakebin; } < <(make_main_home perhome mate)
   # A second registered mate in the same home, so one nudge cannot silence the other.
-  cp "$home/state/mate.meta" "$home/state/other.meta"
-  sed -i.bak 's/fm-mate/fm-other/' "$home/state/other.meta" && rm -f "$home/state/other.meta.bak"
+  other_home=$(sed -n 's/^worktree=//p' "$home/state/mate.meta")
+  fm_write_secondmate_meta "$home/state/other.meta" "$other_home" \
+    firstmate:fm-other sample claude
+  printf 'backend=tmux\nspawn_gen=spawn-other\n' >> "$home/state/other.meta"
   snap="$home/snapshot.json"
   jq -n '{schema:"fm-fleet-snapshot.v1", generated:"2026-08-26T00:00:00Z",
     secondmate_current:{records:[
@@ -307,7 +311,7 @@ test_each_home_carries_its_own_cooldown() {
        invalidity:{kind:"orphan_in_flight",ids:["a"]},
        reconcile_inventory:{kind:"orphan_in_flight",ids:["a"]},
        provenance:{selected:"structured-home",trust:"partial-structured"}},
-      {id:"other", home:"/tmp/other", spawn_gen:"spawn-mate", current:{state:"captain_decision",reason:null},
+      {id:"other", home:"/tmp/other", spawn_gen:"spawn-other", current:{state:"captain_decision",reason:null},
        invalidity:{kind:"unowned_current",ids:["b"]},
        reconcile_inventory:{kind:"unowned_current",ids:["b"]},
        provenance:{selected:"structured-home",trust:"partial-structured"}}]}}' > "$snap"
@@ -422,7 +426,7 @@ test_busy_lifecycle_locks_never_hold_up_the_digest() {
     while [ ! -f "$ready" ]; do sleep 0.01; done
     run_notify "$home" "$fakebin" "busy-$label" "$snap" > "$home/notify.out" 2>&1 &
     notify=$!
-    sleep 0.2
+    sleep 1
     if kill -0 "$notify" 2>/dev/null; then
       : > "$release"
       wait "$notify" 2>/dev/null || true
@@ -535,10 +539,12 @@ SH
     rm -f "$home/state/mate.meta" "$home/state/mate.reconcile-nudged"
     cat > "$home/state/mate.meta" <<META
 window=firstmate:fm-mate
+endpoint_task_id=mate
 kind=secondmate
 harness=claude
 backend=tmux
 spawn_gen=spawn-replacement
+project=$mate
 home=$mate
 worktree=$mate
 META

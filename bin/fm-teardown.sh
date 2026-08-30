@@ -2805,7 +2805,11 @@ fm_codex_session_retire "$STATE" "$ID" || {
   echo "error: exact Codex session binding for $ID could not be retired safely; retaining task metadata" >&2
   exit 1
 }
-ARCHIVED_CALLSIGN=$(fm_identity_archive_task "$META" "$ID") || {
+# The live endpoint ownership proof above ran before the endpoint was closed.
+# The task lifecycle/meta locks keep that exact binding immutable through this
+# point; archive compares it byte-for-byte without requiring the closed pane to
+# become live again.
+ARCHIVED_CALLSIGN=$(fm_identity_archive_task "$META" "$ID" prevalidated) || {
   echo "error: task $ID cleanup reached record retirement, but its callsign history could not be archived; retaining task metadata for a safe retry" >&2
   exit 1
 }

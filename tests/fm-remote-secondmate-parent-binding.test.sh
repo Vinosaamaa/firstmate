@@ -221,9 +221,12 @@ esac
 # --- a finished child worker inside the remote secondmate home --------------
 CHILD_WT="$REMOTE_HOME/projects/alpha"
 mkdir -p "$REMOTE_HOME/state"
+CHILD_SEQ=0
+CHILD_ID=
 write_child_meta() {
-  fm_write_meta "$REMOTE_HOME/state/work-child.meta" \
-    "window=firstmate:fm-work-child" "endpoint_task_id=work-child" \
+  local id=$1
+  fm_write_meta "$REMOTE_HOME/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
     "worktree=$CHILD_WT" "project=$CHILD_WT" "harness=codex" "kind=ship" \
     "mode=local-only" "yolo=off"
 }
@@ -235,11 +238,13 @@ done
 
 run_child_teardown() { # <extra env assignments...>
   local out rc=0
-  write_child_meta
+  CHILD_SEQ=$((CHILD_SEQ + 1))
+  CHILD_ID="work-child-$CHILD_SEQ"
+  write_child_meta "$CHILD_ID"
   out=$(env "$@" PATH="$TMP_ROOT/childfake:$PATH" \
     FM_HOME="$REMOTE_HOME" FM_STATE_OVERRIDE="$REMOTE_HOME/state" \
     FM_DATA_OVERRIDE="$REMOTE_HOME/data" FM_CONFIG_OVERRIDE="$REMOTE_HOME/config" \
-    "$REMOTE_ROOT/bin/fm-teardown.sh" work-child 2>&1) || rc=$?
+    "$REMOTE_ROOT/bin/fm-teardown.sh" "$CHILD_ID" 2>&1) || rc=$?
   CHILD_TEARDOWN_OUT=$out
   CHILD_TEARDOWN_RC=$rc
 }
@@ -287,7 +292,7 @@ rm -f "$REMOTE_HOME/.env"
   || fail "a remote secondmate's own committed .env token must still refuse cleanup, got rc=0: $CHILD_TEARDOWN_OUT"
 assert_contains "$CHILD_TEARDOWN_OUT" "cannot resolve the primary home" \
   "a genuine same-filesystem token on this home must remain an actionable refusal"
-assert_present "$REMOTE_HOME/state/work-child.meta" \
+assert_present "$REMOTE_HOME/state/$CHILD_ID.meta" \
   "a genuine refusal must preserve the child work metadata"
 pass "a remote secondmate's own committed relay token still refuses cleanup"
 

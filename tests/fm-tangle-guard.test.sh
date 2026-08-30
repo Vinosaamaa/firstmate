@@ -211,6 +211,8 @@ set -u
 [ -n "${FM_TMUX_REC:-}" ] && printf 'tmux %s\n' "$*" >> "$FM_TMUX_REC"
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_id}|#{pane_tty}"*) printf '%%1|/dev/ttys999\n'; exit 0 ;;
+  *"#{pane_id}"*) printf '%%1\n'; exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -221,6 +223,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  fm_test_fake_tmux_agent_ps "$fakebin"
   fm_fake_exit0 "$fakebin" treehouse
   printf '%s\n' "$fakebin"
 }
@@ -260,13 +263,13 @@ test_spawn_tmux_window_construction() {
   assert_grep "set-window-option -t @spawnwid allow-rename off" "$rec" \
     "must disable allow-rename on the spawned window"
 
-  # Bug 2 fix (b): treehouse-get and the worktree wait loop target the stable id.
-  assert_grep "send-keys -t @spawnwid treehouse get Enter" "$rec" \
-    "treehouse get must be sent to the stable window id"
-  assert_grep "display-message -p -t @spawnwid #{pane_current_path}" "$rec" \
-    "the worktree wait loop must query the stable window id, not the name"
+  # Bug 2 fix (b): treehouse-get and the worktree wait loop target the stable pane.
+  assert_grep "send-keys -t %1 treehouse get Enter" "$rec" \
+    "treehouse get must be sent to the stable pane id"
+  assert_grep "display-message -p -t %1 #{pane_current_path}" "$rec" \
+    "the worktree wait loop must query the stable pane id, not the name"
 
-  pass "fm-spawn: appends windows by session-colon, pins the name, and targets the window id"
+  pass "fm-spawn: appends windows by session-colon, pins the name, and targets the pane id"
 }
 
 test_lib_classification

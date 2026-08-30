@@ -289,7 +289,7 @@ test_codex_unverified_until_a_semantic_source_exists() {
   state="$HOME_DIR/state"
   assert_absent "$state/$id.busy-gen" "codex must not arm a busy contract with no verified semantic source"
   assert_absent "$WT_DIR/.codex/hooks.json" "codex must not install unverified busy hooks"
-  assert_contains "$out" 'spawned '"$id"' harness=codex' "codex spawn did not complete normally"
+  assert_contains "$out" "($id) harness=codex" "codex spawn did not complete normally"
   out=$(classify codex "$id" "$state")
   [ "$out" = "unknown codex-unverified" ] || fail "codex must classify 'unknown codex-unverified', got '$out'"
   out=$(fm_busy_classify tmux fake:w codex "$id" "$state" '• Working (6s • esc to interrupt)')
