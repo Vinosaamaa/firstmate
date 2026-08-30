@@ -1014,6 +1014,7 @@ test_spawn_relaunch_without_a_harness_reuses_the_recorded_one() {
   mkdir -p "$dir/home/config"
   printf 'codex\n' > "$dir/home/config/crew-harness"
   printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/stopped"
   out=$(run_spawn "$dir" rl21 --relaunch)
   [ "$(meta_field "$dir" rl21 harness)" = claude ] \
     || fail "fm-spawn --relaunch without --harness must reuse the recorded harness, got '$(meta_field "$dir" rl21 harness)'"
@@ -1036,6 +1037,7 @@ test_prefixed_prior_harness_wiring_is_still_retired() {
   printf '%s\n' "$dir/home/state/rl30.turn-ended" > "$auth"
   printf 'token=fm.abcdefabcdef\n' > "$dir/wt/.fm-grok-turnend"
   printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/stopped"
   run_spawn "$dir" rl30 --relaunch --harness claude >/dev/null
   [ ! -e "$auth" ] \
     || fail "a prefixed prior harness must still have its turn-end registry entry revoked"
@@ -1058,6 +1060,7 @@ test_muse_session_binding_is_retired_on_a_harness_switch() {
     > "$dir/home/state/rl31.muse-session"
   printf '/nonexistent/session.jsonl\n' > "$dir/home/state/rl31.muse-session-current"
   printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/stopped"
   run_spawn "$dir" rl31 --relaunch --harness claude >/dev/null
   [ ! -e "$dir/home/state/rl31.muse-session" ] \
     || fail "the retired muse incarnation's session binding must not outlive it"
@@ -1073,6 +1076,7 @@ test_cursor_session_binding_is_retired_on_a_harness_switch() {
   printf 'workspace=%s\nprior_conversation=old-conversation\n' "$dir/wt" \
     > "$dir/home/state/rl35.cursor-session"
   printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/stopped"
   run_spawn "$dir" rl35 --relaunch --harness claude >/dev/null
   [ ! -e "$dir/home/state/rl35.cursor-session" ] \
     || fail "the retired cursor incarnation's session binding must not outlive it"
@@ -1446,6 +1450,7 @@ test_direct_spawn_relaunch_participates_in_the_lifecycle_lock() {
   dir=$(new_case spawnlock rl26)
   add_ship_task "$dir" rl26 claude
   printf 'zsh' > "$dir/fake/command"
+  : > "$dir/fake/stopped"
   lock="$dir/home/state/.control-rl26.lock"
   (
     . "$ROOT/bin/fm-wake-lib.sh"

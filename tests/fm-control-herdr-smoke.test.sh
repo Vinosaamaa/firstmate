@@ -180,7 +180,7 @@ SH
 chmod +x "$SCRATCH/fakebin/codex"
 
 herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
-  --agent fm-control-smoke-agent --session "$SESSION" >/dev/null 2>&1 \
+  --agent fm-control-smoke-agent --seq 1 --session "$SESSION" >/dev/null 2>&1 \
   || fail "could not release the synthetic agent before the Codex resume case"
 sed 's/^harness=claude$/harness=codex/' "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"

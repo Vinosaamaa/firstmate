@@ -1655,7 +1655,7 @@ EOF
   make_fake_ps_claude "$fakebin"
   write_long_body_backlog "$home/data/backlog.md"
   mkdir -p "$home/projects/firstmate"
-  printf 'window=fm-sess:compact\nworktree=%s\nproject=firstmate\nkind=ship\n' "$home/projects/firstmate" \
+  printf 'window=fm-sess:fm-compact-startup\nworktree=%s\nproject=firstmate\nkind=ship\n' "$home/projects/firstmate" \
     > "$home/state/compact-startup.meta"
   log="$home/tasks-axi.log"
 

@@ -1013,7 +1013,7 @@ test_interruption_before_and_after_raw_commit() {
     i=$((i + 1))
   done
   [ -e "$state/.wake-queue.lock" ] || { kill "$pid" 2>/dev/null || true; fail "pre-commit drain never entered its serialized read boundary"; }
-  kill -TERM "$pid" 2>/dev/null || fail "could not interrupt drain before raw commitment"
+  kill -KILL "$pid" 2>/dev/null || fail "could not interrupt drain before raw commitment"
   set +e
   wait "$pid"
   rc=$?

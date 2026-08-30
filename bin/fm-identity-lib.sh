@@ -747,14 +747,8 @@ fm_identity_archive_task() {  # <meta> <task-id> [prevalidated]
   }
   callsign=$(fm_identity_record_value "$record" callsign)
   status=$(fm_identity_record_value "$record" status)
-  if [ "$status" = active ]; then
-    if [ "$validation" = prevalidated ]; then
-      fm_identity_active_binding_fields_match "$record" "$meta" "$id" || {
-        fm_identity_lock_release
-        fm_identity_error "task $id's callsign binding changed after cleanup ownership was validated; refusing historical rebinding"
-        return 1
-      }
-    elif ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
+  if [ "$status" = active ] && [ "$validation" != prevalidated ]; then
+    if ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
       fm_identity_lock_release
       fm_identity_error "task $id's callsign binding conflicts with its cleanup metadata; refusing historical rebinding"
       return 1
@@ -763,7 +757,11 @@ fm_identity_archive_task() {  # <meta> <task-id> [prevalidated]
   created=$(fm_identity_record_value "$record" created_at 2>/dev/null || fm_identity_now)
   retired=$(mktemp "${TMPDIR:-/tmp}/fm-identity-retired.XXXXXXXX") || { fm_identity_lock_release; return 1; }
   grep '^retired_callsign=' "$record" > "$retired" 2>/dev/null || true
-  fm_identity_write_task_record "$record" "$id" "$callsign" archived "$meta" "$created" "$retired" \
+  # Cleanup ownership was validated above while the endpoint and worktree
+  # still existed. Archive only the durable name history: a remote secondmate
+  # home is intentionally gone by this final retirement point, so attempting
+  # to canonicalize its deleted path again would make safe cleanup impossible.
+  fm_identity_write_task_record "$record" "$id" "$callsign" archived "" "$created" "$retired" \
     || { rm -f "$retired"; fm_identity_lock_release; return 1; }
   rm -f "$retired"
   fm_identity_lock_release
