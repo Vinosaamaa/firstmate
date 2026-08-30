@@ -1239,6 +1239,12 @@ if ! wait "$teardown_pid"; then
   printf 'serialized retirement output:\n%s\n' "$(cat "$TMP_ROOT/teardown-serialized.out")" >&2
   fail "safe remote retirement failed after handoff serialization"
 fi
+if [ -e "$REMOTE_HOME" ]; then
+  printf 'serialized retirement output after retained home:\n%s\n' \
+    "$(cat "$TMP_ROOT/teardown-serialized.out")" >&2
+  find "$REMOTE_HOME" -mindepth 1 -maxdepth 2 -print 2>/dev/null | sort >&2
+  git -C "$REMOTE_ROOT" worktree list --porcelain >&2 2>/dev/null || true
+fi
 assert_absent "$REMOTE_HOME" "remote retirement did not remove the remote home"
 assert_absent "$PARENT/state/ios.meta" "remote retirement did not remove parent metadata"
 assert_absent "$PARENT/state/.backlog-handoff-ios.wake-pending" \

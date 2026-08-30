@@ -207,6 +207,7 @@ run_spawn() {  # <case-dir> <args...>
   local dir=$1; shift
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
     FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
+    FM_FAKE_TMUX_AGENT_STOPPED_MARKER="$dir/fake/stopped" \
     "$SPAWN" "$@" 2>&1
 }
 
