@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,13 +42,80 @@ jobs:
       - name: Prove complete test inventory metadata
         run: bin/fm-test-run.sh --check-coverage
 
+  behavior-selection:
+    name: Behavior test selection
+    runs-on: ubuntu-latest
+    outputs:
+      portable: ${{ steps.select.outputs.portable }}
+      herdr: ${{ steps.select.outputs.herdr }}
+      has_portable: ${{ steps.select.outputs.has_portable }}
+      has_herdr: ${{ steps.select.outputs.has_herdr }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Select explicit owner tests for changed paths
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          selected="$RUNNER_TEMP/fm-test/required-tests"
+          portable="$RUNNER_TEMP/fm-test/required-portable"
+          herdr="$RUNNER_TEMP/fm-test/required-herdr"
+
+          if [ "$EVENT_NAME" = pull_request ]; then
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
+              | bin/fm-required-test-selection.sh > "$selected"
+          else
+            bin/fm-required-test-selection.sh --all > "$selected"
+          fi
+
+          while IFS= read -r test_path; do
+            [ -n "$test_path" ] || continue
+            case "$test_path" in
+              tests/fm-backend-herdr-presentation-e2e.test.sh|\
+              tests/fm-control-herdr-smoke.test.sh|\
+              tests/fm-herdr-session-cleanup-e2e.test.sh)
+                printf '%s\n' "$test_path" >> "$herdr"
+                ;;
+              *) printf '%s\n' "$test_path" >> "$portable" ;;
+            esac
+          done < "$selected"
+
+          portable_count=0
+          herdr_count=0
+          [ ! -f "$portable" ] || portable_count=$(wc -l < "$portable" | tr -d ' ')
+          [ ! -f "$herdr" ] || herdr_count=$(wc -l < "$herdr" | tr -d ' ')
+          [ "$((portable_count + herdr_count))" -le 15 ] || {
+            echo "::error::required behavior selection exceeded the 15-test allowlist"
+            exit 1
+          }
+
+          {
+            echo 'portable<<FM_TESTS'
+            [ ! -f "$portable" ] || cat "$portable"
+            echo 'FM_TESTS'
+            echo 'herdr<<FM_TESTS'
+            [ ! -f "$herdr" ] || cat "$herdr"
+            echo 'FM_TESTS'
+            [ "$portable_count" -gt 0 ] && echo 'has_portable=true' || echo 'has_portable=false'
+            [ "$herdr_count" -gt 0 ] && echo 'has_herdr=true' || echo 'has_herdr=false'
+          } >> "$GITHUB_OUTPUT"
+          echo "Selected $portable_count portable and $herdr_count Herdr owner tests" >> "$GITHUB_STEP_SUMMARY"
+
   # Required product behavior is deliberately limited to representative owner
   # tests for the captain fork's critical surfaces. The broad upstream suite is
   # scheduled/manual advisory compatibility coverage.
   tests-required-portable:
     name: Behavior required portable
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    needs: behavior-selection
+    if: needs.behavior-selection.outputs.has_portable == 'true'
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
         with:
@@ -62,28 +130,27 @@ jobs:
           set -eu
           bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Require tmux for lifecycle owner tests
+        run: |
+          set -eu
+          command -v tmux >/dev/null || {
+            echo "::error::tmux is required for lifecycle owner tests"
+            exit 1
+          }
+          tmux -V
       - name: Install tasks-axi
         run: |
           set -eu
           npm install -g tasks-axi
           tasks-axi --version
       - name: Run required portable owner tests
+        env:
+          FM_REQUIRED_TESTS: ${{ needs.behavior-selection.outputs.portable }}
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
-          bin/fm-test-run.sh \
-            tests/fm-backend-herdr.test.sh \
-            tests/fm-codex-session.test.sh \
-            tests/fm-control-relaunch.test.sh \
-            tests/fm-display-title.test.sh \
-            tests/fm-identity.test.sh \
-            tests/fm-secondmate-lifecycle-e2e.test.sh \
-            tests/fm-supervision-instructions.test.sh \
-            tests/fm-teardown-endpoint-safety.test.sh \
-            tests/fm-teardown.test.sh \
-            tests/fm-watch-recovery-loop.test.sh \
-            tests/fm-watcher-lock.test.sh \
-            tests/fm-workspace.test.sh \
+          mapfile -t required_tests <<< "$FM_REQUIRED_TESTS"
+          bin/fm-test-run.sh "${required_tests[@]}" \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-required-portable.json"
       - name: Upload required portable timing artifact
         if: always()
@@ -100,6 +167,8 @@ jobs:
   tests-herdr:
     name: Behavior tests (Herdr)
     runs-on: ubuntu-latest
+    needs: behavior-selection
+    if: needs.behavior-selection.outputs.has_herdr == 'true'
     # Healthy runs finish around 7 minutes. This job cap is a last-resort hang
     # tripwire, not the expected end of the lane. The family-run step owns the
     # tighter bound so a wedged suite fails fast with always() cleanup and
@@ -187,13 +256,13 @@ jobs:
         # Comfortably above the healthy wall and far below the 75 min
         # job backstop. A hang must fail this step so cleanup still runs.
         timeout-minutes: 20
+        env:
+          FM_REQUIRED_TESTS: ${{ needs.behavior-selection.outputs.herdr }}
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
-          bin/fm-test-run.sh \
-            tests/fm-backend-herdr-presentation-e2e.test.sh \
-            tests/fm-control-herdr-smoke.test.sh \
-            tests/fm-herdr-session-cleanup-e2e.test.sh \
+          mapfile -t required_tests <<< "$FM_REQUIRED_TESTS"
+          bin/fm-test-run.sh "${required_tests[@]}" \
             --fail-on-gate-skip 'herdr not found' \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-required-herdr.json"
       - name: Cleanup job-owned Herdr lab sessions
