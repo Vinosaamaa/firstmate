@@ -12,6 +12,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 
 # bin/fm-harness.sh checks verified ENV markers before ancestry. Muse is
 # markerless, so an inherited Cursor/Claude/Pi/Grok marker would outrank the
@@ -67,13 +69,16 @@ write_session_log() {
 # --- spawn scaffolding ------------------------------------------------------
 
 make_spawn_fakebin() {
-  local dir=$1 fakebin
+  local dir=$1 fakebin real_ps
   fakebin=$(fm_fakebin "$dir")
+  real_ps=$(command -v ps)
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_id}|#{pane_tty}"*) printf '%%1|/dev/ttys999\n'; exit 0 ;;
+  *"#{pane_id}"*) printf '%%1\n'; exit 0 ;;
 esac
 case "${1:-}" in
   show-environment)
@@ -83,7 +88,8 @@ case "${1:-}" in
     ;;
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  new-window) printf '@1\n'; exit 0 ;;
+  has-session|new-session|kill-window|set-window-option) exit 0 ;;
   send-keys)
     prev=
     for arg in "$@"; do
@@ -104,6 +110,18 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+case "\$*" in
+  *'-t ttys999 '*'pid=,pgid=,tpgid=,comm='*) printf '424242 424242 424242 codex\n' ;;
+  *'-t ttys999 '*'pid=,pgid=,tpgid='*) printf '424242 424242 424242\n' ;;
+  *'-p 424242 '*'pid=,lstart=,tty=,comm='*) printf '424242 Mon Jan 1 00:00:00 2026 ttys999 codex\n' ;;
+  *'-p 424242 '*'args='*) printf 'codex\n' ;;
+  *) exec "$real_ps" "\$@" ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
   cp "$(command -v bash)" "$fakebin/muse-bin-test-version"
   cat > "$fakebin/muse" <<'SH'
 #!/usr/bin/env bash
@@ -458,7 +476,7 @@ exit 0
 SH
   chmod +x "$fakebin/tmux"
   fm_write_meta "$home/state/$id.meta" \
-    "window=fm-send:0" "endpoint_task_id=$id" "worktree=$case_dir" \
+    "window=fm-send:fm-$id" "worktree=$case_dir" \
     "project=$case_dir" "harness=$harness" "kind=ship" "mode=no-mistakes" "yolo=off"
   printf '%s\n' "$case_dir|$home|$fakebin|$id"
 }
@@ -515,7 +533,7 @@ $rec
 EOF
   keylog="$case_dir/keys.log"
   : > "$keylog"
-  out=$(FM_FAKE_KEY_FAIL='-t fm-send:0 C-u' run_send_key "$home" "$fakebin" "$id" Escape "$keylog")
+  out=$(FM_FAKE_KEY_FAIL='-t fm-send:fm-send-clearfail C-u' run_send_key "$home" "$fakebin" "$id" Escape "$keylog")
   status=$?
   [ "$status" -ne 0 ] || fail "a failed muse composer clear was reported as success"
   assert_contains "$out" "could not be cleared" "the failed clear did not explain the pane state"

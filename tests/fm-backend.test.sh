@@ -29,8 +29,8 @@
 # kill) lives in tests/fm-backend-tmux-smoke.test.sh.
 set -u
 
-# shellcheck source=tests/lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 fm_git_identity fmtest fmtest@example.invalid
 
 # shellcheck source=/dev/null
@@ -778,13 +778,19 @@ set -u
 { printf 'tmux'; for a in "\$@"; do printf '\\x1f%s' "\$a"; done; printf '\\n'; } >> "\${FM_TMUX_LOG:?}"
 case "\${1:-}" in
   display-message)
+    case "\$*" in
+      *'#{pane_id}|#{pane_tty}'*) printf '%%1|/dev/ttys999\\n'; exit 0 ;;
+      *'#{pane_id}'*) printf '%%1\\n'; exit 0 ;;
+    esac
     for a in "\$@"; do case "\$a" in *pane_current_path*) printf '%s\\n' "$wt"; exit 0 ;; esac; done
     printf 'firstmate\\n'; exit 0 ;;
   list-windows) exit 0 ;;
+  new-window) printf '@1\\n'; exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  fm_test_fake_tmux_agent_ps "$fb"
   fm_fake_exit0 "$fb" treehouse
   printf '%s\n' "$fb"
 }
@@ -840,6 +846,10 @@ set -u
 { printf 'tmux'; for a in "\$@"; do printf '\\x1f%s' "\$a"; done; printf '\\n'; } >> "\${FM_TMUX_LOG:?}"
 case "\${1:-}" in
   display-message)
+    case "\$*" in
+      *'#{pane_id}|#{pane_tty}'*) printf '%%1|/dev/ttys999\n'; exit 0 ;;
+      *'#{pane_id}'*) printf '%%1\n'; exit 0 ;;
+    esac
     for a in "\$@"; do case "\$a" in *pane_current_path*)
       printf x >> "$counter"
       if [ "\$(wc -c < "$counter")" -le 1 ]; then
@@ -851,10 +861,12 @@ case "\${1:-}" in
     ;; esac; done
     printf 'firstmate\\n'; exit 0 ;;
   list-windows) exit 0 ;;
+  new-window) printf '@1\n'; exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fb/tmux"
+  fm_test_fake_tmux_agent_ps "$fb"
   fm_fake_exit0 "$fb" treehouse
   printf '%s\n' "$fb"
 }
@@ -940,7 +952,7 @@ run_teardown_case() {
 
 test_teardown_conformance_old_vs_new() {
   local old_bin fb proj wt id old_tmux_ref saved_base_ref
-  local state_old state_new config_old config_new data log_old log_new out_old out_new rc_old rc_new
+  local state_old state_new config_old config_new data_old data_new log_old log_new out_old out_new rc_old rc_new
   # Force the post-squash topology inside this case: merge-base with main may
   # equal HEAD on default-branch CI, and that must not make the legacy kill
   # fixture self-referential. build_old_bin still uses BASE_REF for entrypoints;
@@ -958,9 +970,10 @@ test_teardown_conformance_old_vs_new() {
   fm_git_worktree "$proj" "$wt" "fm/$id"
   fb=$(make_teardown_fakebin "$TMP_ROOT/teardown-fake")
 
-  data="$TMP_ROOT/teardown-data"
-  mkdir -p "$data/$id"
-  printf 'scout findings\n' > "$data/$id/report.md"
+  data_old="$TMP_ROOT/teardown-data-old"; data_new="$TMP_ROOT/teardown-data-new"
+  mkdir -p "$data_old/$id" "$data_new/$id"
+  printf 'scout findings\n' > "$data_old/$id/report.md"
+  printf 'scout findings\n' > "$data_new/$id/report.md"
 
   state_old="$TMP_ROOT/teardown-state-old"; state_new="$TMP_ROOT/teardown-state-new"
   config_old="$TMP_ROOT/teardown-config-old"; config_new="$TMP_ROOT/teardown-config-new"
@@ -975,9 +988,9 @@ test_teardown_conformance_old_vs_new() {
   touch "$state_old/.last-watcher-beat" "$state_new/.last-watcher-beat"
 
   log_old="$TMP_ROOT/teardown-old.log"; log_new="$TMP_ROOT/teardown-new.log"
-  out_old=$(run_teardown_case "$old_bin/bin/fm-teardown.sh" "$old_bin" "$fb" "$log_old" "$state_old" "$data" "$config_old" "$id" 2>&1)
+  out_old=$(run_teardown_case "$old_bin/bin/fm-teardown.sh" "$old_bin" "$fb" "$log_old" "$state_old" "$data_old" "$config_old" "$id" 2>&1)
   rc_old=$?
-  out_new=$(run_teardown_case "$ROOT/bin/fm-teardown.sh" "$old_bin" "$fb" "$log_new" "$state_new" "$data" "$config_new" "$id" 2>&1)
+  out_new=$(run_teardown_case "$ROOT/bin/fm-teardown.sh" "$old_bin" "$fb" "$log_new" "$state_new" "$data_new" "$config_new" "$id" 2>&1)
   rc_new=$?
 
   expect_code 0 "$rc_old" "old fm-teardown.sh (scout, report present) should succeed"$'\n'"$out_old"

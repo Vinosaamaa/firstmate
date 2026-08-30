@@ -99,7 +99,7 @@ SH
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' 'no-mistakes version v1.31.2 (fake) 2026-06-27T00:02:18Z'
+  printf '%s\n' 'no-mistakes version v1.46.0 (fake) 2026-06-27T00:02:18Z'
   exit 0
 fi
 exit 0
@@ -226,6 +226,10 @@ for argument in "$@"; do
   previous=$argument
 done
 case "$*" in
+  *'-t ttys999 '*'pid=,pgid=,tpgid=,comm='*) printf '424242 424242 424242 pi\n'; exit 0 ;;
+  *'-t ttys999 '*'pid=,pgid=,tpgid='*) printf '424242 424242 424242\n'; exit 0 ;;
+  *'-p 424242 '*'pid=,lstart=,tty=,comm='*) printf '424242 Mon Jan 1 00:00:00 2026 ttys999 pi\n'; exit 0 ;;
+  *'-p 424242 '*'args='*) printf 'pi\n'; exit 0 ;;
   *"comm="*)
     if [ -z "${FM_FAKE_HARNESS_PID:-}" ] || [ "$pid" = "$FM_FAKE_HARNESS_PID" ] \
       || [ "$pid" = "${FM_FAKE_LIVE_HOLDER_PID:-}" ]; then
@@ -343,6 +347,9 @@ case "${1:-}" in
     done
     if [ "${target#%}" != "$target" ]; then
       case "$format" in
+        *'#{pane_id}|#{pane_tty}'*) printf '%%1|/dev/ttys999\n' ;;
+        *pane_tty*) printf '/dev/ttys999\n' ;;
+        *pane_id*) printf '%%1\n' ;;
         *pane_current_path*) printf '%s\n' "$mate_home" ;;
         *pane_current_command*) printf '%s\n' node ;;
         *) printf '%s\n' "$target" ;;
@@ -557,6 +564,10 @@ EOF
   printf '%s\n' "$id" > "$mate/.fm-secondmate-home"
   printf '# Firstmate\n' > "$mate/AGENTS.md"
   printf 'Second mate charter.\n' > "$mate/data/charter.md"
+  git -C "$mate" init -q
+  git -C "$mate" add AGENTS.md data/charter.md
+  git -C "$mate" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -qm initial
   printf '%s\n' pi > "$home/config/secondmate-harness"
   printf '%s\n' manual > "$home/config/backlog-backend"
   touch "$home/state/.last-watcher-beat"
@@ -714,6 +725,12 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
+  jq -e --arg home "$home" '
+    .schema == "fm-secondmate-home-summary.v1"
+    and .home == $home
+    and (.generated_epoch | type) == "number"
+  ' "$home/state/home-summary.json" >/dev/null \
+    || fail "a locked session start did not publish the home summary ledger"
   assert_contains "$out" "data/projects.md" "digest did not label the projects.md section"
   assert_contains "$out" "- demo [no-mistakes] - a demo project (added 2026-07-01)" "digest did not print projects.md content"
 
@@ -1180,7 +1197,7 @@ EOF
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   assert_contains "$out" "Orphan status logs (state/*.status without matching .meta)" "digest did not label orphan status logs"
-  assert_contains "$out" "--- task-orphan ---" "digest did not print the orphan status id"
+  assert_contains "$out" "(task-orphan) ---" "digest did not print the orphan status id"
   assert_contains "$out" "orphan: step 6" "orphan status tail missing the newest line"
   assert_not_contains "$out" "orphan: step 1" "orphan status tail was not bounded"
   assert_contains "$out" "$home/state/task-orphan.status" "orphan status tail did not print the full log path"
@@ -1638,7 +1655,7 @@ EOF
   make_fake_ps_claude "$fakebin"
   write_long_body_backlog "$home/data/backlog.md"
   mkdir -p "$home/projects/firstmate"
-  printf 'window=fm-sess:compact\nworktree=%s\nproject=firstmate\nkind=ship\n' "$home/projects/firstmate" \
+  printf 'window=fm-sess:fm-compact-startup\nworktree=%s\nproject=firstmate\nkind=ship\n' "$home/projects/firstmate" \
     > "$home/state/compact-startup.meta"
   log="$home/tasks-axi.log"
 
@@ -1660,7 +1677,7 @@ EOF
   assert_not_contains "$out" "OVERSIZED-BODY-LINE" "tasks-axi compact digest leaked an in-flight task body"
   assert_not_contains "$out" "QUEUED-BODY-LINE" "tasks-axi compact digest leaked a queued task body"
   assert_not_contains "$out" "DONE-ROW-LINE" "tasks-axi compact digest listed a done row at startup"
-  assert_contains "$out" "--- compact-startup ---" "in-flight meta identity disappeared from startup recovery digest"
+  assert_contains "$out" "(compact-startup) ---" "in-flight meta identity disappeared from startup recovery digest"
   assert_contains "$out" "worktree=$home/projects/firstmate" "in-flight recovery worktree identity disappeared from startup digest"
   assert_contains "$out" "Full task bodies remain available on demand: tasks-axi show <id> --full" \
     "compact digest omitted the full-body lookup pointer"

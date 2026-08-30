@@ -67,6 +67,7 @@ fm_backend_tmux_process_sample() {  # <pid>
   case "$wanted" in ''|*[!0-9]*) return 1 ;; esac
   out=$(LC_ALL=C ps -p "$wanted" -o pid=,lstart=,tty=,comm= 2>/dev/null) || return 1
   out=${out#"${out%%[![:space:]]*}"}
+  # shellcheck disable=SC2086 # Split the fixed ps fields into positional parameters.
   set -- $out
   [ "$#" -ge 8 ] || return 1
   pid=$1

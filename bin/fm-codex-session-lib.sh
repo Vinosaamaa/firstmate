@@ -116,7 +116,15 @@ fm_codex_session_meta_field() {  # <meta> <key>
 }
 
 fm_codex_session_file_mode() {  # <path>
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  local mode
+  # GNU stat treats BSD's format operand as another path. It can therefore
+  # print filesystem details for the real record before returning failure;
+  # printing the fallback inline would concatenate that residue with "600".
+  # Capture each dialect first so only the successful result reaches callers.
+  mode=$(stat -f '%Lp' "$1" 2>/dev/null) \
+    || mode=$(stat -c '%a' "$1" 2>/dev/null) \
+    || return 1
+  printf '%s' "$mode"
 }
 
 fm_codex_session_record_regular() {  # <record>
@@ -343,6 +351,23 @@ fm_codex_session_transition() {  # <state> <task> <meta> <expected> <new>
   printf '%s' "$session"
 }
 
+fm_codex_session_tmux_endpoint_migration_matches() {  # <task> <old-meta> <new-meta>
+  local task=$1 old_meta=$2 new_meta=$3 old_endpoint new_endpoint pane tty status
+  old_endpoint=$(fm_codex_session_meta_field "$old_meta" window 2>/dev/null || true)
+  new_endpoint=$(fm_codex_session_meta_field "$new_meta" window 2>/dev/null || true)
+  pane=$(fm_codex_session_meta_field "$new_meta" tmux_pane_id 2>/dev/null || true)
+  tty=$(fm_codex_session_meta_field "$new_meta" tmux_pane_tty 2>/dev/null || true)
+  status=$(fm_codex_session_meta_field "$new_meta" tmux_identity_status 2>/dev/null || true)
+  case "$old_endpoint" in *:*) ;; *) return 1 ;; esac
+  case "$new_endpoint:$pane:$tty:$status" in
+    %*[0-9]:%*[0-9]:/dev/*:bound|%*[0-9]:%*[0-9]:/dev/*:pending|%*[0-9]:%*[0-9]:/dev/*:failed) ;;
+    *) return 1 ;;
+  esac
+  [ "$new_endpoint" = "$pane" ] \
+    && [ "$(fm_codex_session_meta_field "$old_meta" endpoint_task_id 2>/dev/null || true)" = "$task" ] \
+    && [ "$(fm_codex_session_meta_field "$new_meta" endpoint_task_id 2>/dev/null || true)" = "$task" ]
+}
+
 fm_codex_session_rebind() {  # <state> <task> <old-meta> <new-meta> <expected> <new>
   local state_dir=$1 task=$2 old_meta=$3 new_meta=$4 expected=$5 lifecycle=$6
   local session side owner status=0 old_endpoint new_endpoint old_wt new_wt updated_at
@@ -358,7 +383,9 @@ fm_codex_session_rebind() {  # <state> <task> <old-meta> <new-meta> <expected> <
   new_backend=$(fm_codex_session_backend_of_meta "$new_meta")
   old_gen=$(fm_codex_session_meta_field "$old_meta" spawn_gen 2>/dev/null || true)
   new_gen=$(fm_codex_session_meta_field "$new_meta" spawn_gen 2>/dev/null || true)
-  [ "$old_endpoint" = "$new_endpoint" ] \
+  { [ "$old_endpoint" = "$new_endpoint" ] \
+    || { [ "$old_backend" = tmux ] && [ "$new_backend" = tmux ] \
+         && fm_codex_session_tmux_endpoint_migration_matches "$task" "$old_meta" "$new_meta"; }; } \
     && [ "$old_wt" = "$new_wt" ] \
     && [ "$old_backend" = "$new_backend" ] \
     && [ -n "$old_gen" ] && [ -n "$new_gen" ] \

@@ -62,7 +62,7 @@ fm_identity_home_path() {
 }
 
 fm_identity_fold() {
-  local value=$1 folded= char i LC_ALL=C
+  local value=$1 folded="" char i LC_ALL=C
   for ((i = 0; i < ${#value}; i++)); do
     char=${value:i:1}
     case "$char" in
@@ -91,13 +91,21 @@ fm_identity_name_valid() {  # <name>
     [A-Za-z]* ) ;;
     *) return 1 ;;
   esac
-  case "$name" in *[!A-Za-z0-9-]*|*-|*--) return 1 ;; esac
+  case "$name" in *[!A-Za-z0-9-]*|*--|*-) return 1 ;; esac
 }
 
 fm_identity_task_id_valid() {  # <task-id>
   local id=${1:-} LC_ALL=C
-  [ "${#id}" -le 64 ] || return 1
+  # Operational lifecycle entrypoints historically accepted every path-safe
+  # task id. Keep those existing records recoverable and archivable; fresh
+  # task creation retains its separate 64-byte bound below.
+  [ "${#id}" -le 240 ] || return 1
   case "$id" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+}
+
+fm_identity_fresh_task_id_valid() {  # <task-id>
+  fm_identity_task_id_valid "$1" || return 1
+  [ "${#1}" -le 64 ]
 }
 
 fm_identity_name_reserved() {  # <name>
@@ -122,7 +130,7 @@ fm_identity_validate_name() {  # <name>
 }
 
 fm_identity_record_value() {  # <record> <key>
-  local record=$1 key=$2 count=0 value= line
+  local record=$1 key=$2 count=0 value="" line
   [ -f "$record" ] && [ ! -L "$record" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
@@ -362,10 +370,15 @@ fm_identity_backend_of_meta() {
 }
 
 fm_identity_target_of_meta() {
-  local remote
+  local remote id
   remote=$(fm_identity_meta_value "$1" remote_host)
   if [ -n "$remote" ]; then
     fm_identity_meta_value "$1" remote_target
+    return
+  fi
+  id=$(fm_identity_meta_value "$1" endpoint_task_id)
+  if [ -n "$id" ] && fm_identity_validate_pending_tmux_endpoint_ownership "$1" "$id"; then
+    fm_identity_meta_value "$1" tmux_pane_id
     return
   fi
   if declare -F fm_backend_target_of_meta >/dev/null 2>&1; then
@@ -418,6 +431,33 @@ fm_identity_harness_session_of_meta() {
   printf '%s' "$found"
 }
 
+fm_identity_validate_pending_tmux_endpoint_ownership() {  # <meta> <task-id>
+  local meta=$1 id=$2 backend_count backend binding window pane tty status digits key
+  backend_count=$(grep -c '^backend=' "$meta" 2>/dev/null || true)
+  case "$backend_count" in
+    0) backend=tmux ;;
+    1) backend=$(fm_identity_meta_value "$meta" backend) ;;
+    *) return 1 ;;
+  esac
+  [ "$backend" = tmux ] || return 1
+  for key in window endpoint_task_id tmux_pane_id tmux_pane_tty tmux_identity_status; do
+    [ "$(grep -c "^$key=" "$meta" 2>/dev/null || true)" -eq 1 ] || return 1
+  done
+  for key in tmux_agent_pid tmux_agent_start tmux_agent_comm tmux_agent_argv0; do
+    [ "$(grep -c "^$key=" "$meta" 2>/dev/null || true)" -eq 0 ] || return 1
+  done
+  binding=$(fm_identity_meta_value "$meta" endpoint_task_id)
+  window=$(fm_identity_meta_value "$meta" window)
+  pane=$(fm_identity_meta_value "$meta" tmux_pane_id)
+  tty=$(fm_identity_meta_value "$meta" tmux_pane_tty)
+  status=$(fm_identity_meta_value "$meta" tmux_identity_status)
+  digits=${pane#%}
+  case "$digits" in ''|*[!0-9]*) return 1 ;; esac
+  case "$tty" in /dev/*) ;; *) return 1 ;; esac
+  [ "$binding" = "$id" ] && [ "$window" = "$pane" ] && [ "$status" = pending ] \
+    && fm_identity_value_safe "$tty"
+}
+
 fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
   local meta=$1 id=$2 remote binding backend target
   remote=$(fm_identity_meta_value "$meta" remote_host)
@@ -433,12 +473,13 @@ fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
     fm_identity_error "shared backend endpoint validation is unavailable for task $id"
     return 1
   }
-  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1
+  fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1 \
+    || fm_identity_validate_pending_tmux_endpoint_ownership "$meta" "$id"
 }
 
 fm_identity_write_task_record() {  # <record> <id> <callsign> <status> <meta|empty> <created> [retired-file]
   local record=$1 id=$2 callsign=$3 status=$4 meta=$5 created=$6 retired_file=${7:-}
-  local home worktree= backend= endpoint= endpoint_session= harness_session= spawn_gen= value tmp
+  local home worktree="" backend="" endpoint="" endpoint_session="" harness_session="" spawn_gen="" value tmp
   fm_identity_task_id_valid "$id" && fm_identity_validate_name "$callsign" >/dev/null 2>&1 || return 1
   home=$(fm_identity_home_path) || return 1
   if [ -n "$meta" ]; then
@@ -493,7 +534,7 @@ fm_identity_record_core_valid() {  # <record> <id>
 
 fm_identity_reserve_fresh_task() {  # <task-id>
   local id=$1 record callsign created status
-  fm_identity_task_id_valid "$id" || { fm_identity_error "task id '$id' is invalid for a persistent callsign binding"; return 1; }
+  fm_identity_fresh_task_id_valid "$id" || { fm_identity_error "task id '$id' is invalid for a fresh persistent callsign binding"; return 1; }
   record=$(fm_identity_task_record "$id")
   fm_identity_lock_acquire || return 1
   # Reserve home and task identity under one critical section. This keeps a
@@ -530,6 +571,30 @@ fm_identity_reserve_fresh_task() {  # <task-id>
   created=$(fm_identity_now)
   fm_identity_write_task_record "$record" "$id" "$callsign" provisioning "" "$created" \
     || { fm_identity_lock_release; return 1; }
+  fm_identity_lock_release
+  printf '%s' "$callsign"
+}
+
+fm_identity_existing_task_callsign() {  # <task-id>
+  local id=$1 record status callsign
+  fm_identity_task_id_valid "$id" || return 1
+  record=$(fm_identity_task_record "$id") || return 1
+  fm_identity_lock_acquire || return 1
+  if ! fm_identity_record_core_valid "$record" "$id"; then
+    fm_identity_lock_release
+    fm_identity_error "identity record for task $id is malformed or belongs to another home; refusing recovery"
+    return 1
+  fi
+  status=$(fm_identity_record_value "$record" status)
+  callsign=$(fm_identity_record_value "$record" callsign)
+  case "$status" in
+    provisioning|active) ;;
+    *)
+      fm_identity_lock_release
+      fm_identity_error "task $id is archived as $callsign; refusing to reactivate a historical identity"
+      return 1
+      ;;
+  esac
   fm_identity_lock_release
   printf '%s' "$callsign"
 }
@@ -584,7 +649,8 @@ fm_identity_ensure_task_from_meta() {  # <meta> <task-id> [legacy|rebind]
     if [ "$status" = active ]; then
       old_worktree=$(fm_identity_record_value "$record" worktree 2>/dev/null || true)
       new_worktree=$(fm_identity_worktree_of_meta "$meta" 2>/dev/null || true)
-      if [ -n "$old_worktree" ] && [ "$old_worktree" != "$new_worktree" ]; then
+      if [ -n "$old_worktree" ] && [ "$old_worktree" != "$new_worktree" ] \
+         && [ "$mode" != rebind ]; then
         fm_identity_lock_release
         fm_identity_error "task $id's callsign $callsign is bound to worktree '$old_worktree', not '$new_worktree'; refusing to rebind it"
         return 1
@@ -669,8 +735,8 @@ fm_identity_ensure_legacy_archive() {  # <task-id>
   printf '%s' "$callsign"
 }
 
-fm_identity_archive_task() {  # <meta> <task-id>
-  local meta=$1 id=$2 record callsign created retired status
+fm_identity_archive_task() {  # <meta> <task-id> [prevalidated]
+  local meta=$1 id=$2 validation=${3:-} record callsign created retired status
   record=$(fm_identity_task_record "$id")
   [ -f "$record" ] || fm_identity_ensure_task_from_meta "$meta" "$id" 1 >/dev/null || return 1
   fm_identity_lock_acquire || return 1
@@ -681,15 +747,21 @@ fm_identity_archive_task() {  # <meta> <task-id>
   }
   callsign=$(fm_identity_record_value "$record" callsign)
   status=$(fm_identity_record_value "$record" status)
-  if [ "$status" = active ] && ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
-    fm_identity_lock_release
-    fm_identity_error "task $id's callsign binding conflicts with its cleanup metadata; refusing historical rebinding"
-    return 1
+  if [ "$status" = active ] && [ "$validation" != prevalidated ]; then
+    if ! fm_identity_validate_active_binding "$record" "$meta" "$id"; then
+      fm_identity_lock_release
+      fm_identity_error "task $id's callsign binding conflicts with its cleanup metadata; refusing historical rebinding"
+      return 1
+    fi
   fi
   created=$(fm_identity_record_value "$record" created_at 2>/dev/null || fm_identity_now)
   retired=$(mktemp "${TMPDIR:-/tmp}/fm-identity-retired.XXXXXXXX") || { fm_identity_lock_release; return 1; }
   grep '^retired_callsign=' "$record" > "$retired" 2>/dev/null || true
-  fm_identity_write_task_record "$record" "$id" "$callsign" archived "$meta" "$created" "$retired" \
+  # Cleanup ownership was validated above while the endpoint and worktree
+  # still existed. Archive only the durable name history: a remote secondmate
+  # home is intentionally gone by this final retirement point, so attempting
+  # to canonicalize its deleted path again would make safe cleanup impossible.
+  fm_identity_write_task_record "$record" "$id" "$callsign" archived "" "$created" "$retired" \
     || { rm -f "$retired"; fm_identity_lock_release; return 1; }
   rm -f "$retired"
   fm_identity_lock_release
@@ -707,11 +779,10 @@ fm_identity_display_callsign() {  # <task-id>
   fi
 }
 
-fm_identity_validate_active_binding() {  # <record> <meta> <task-id>
+fm_identity_active_binding_fields_match() {  # <record> <meta> <task-id>
   local record=$1 meta=$2 id=$3 status worktree backend endpoint endpoint_session harness_session spawn_gen
   local expected_worktree expected_backend expected_endpoint expected_endpoint_session expected_harness_session expected_spawn_gen
   fm_identity_record_core_valid "$record" "$id" || return 1
-  fm_identity_validate_meta_endpoint_ownership "$meta" "$id" || return 1
   status=$(fm_identity_record_value "$record" status)
   [ "$status" = active ] || return 1
   worktree=$(fm_identity_record_value "$record" worktree 2>/dev/null || true)
@@ -731,6 +802,12 @@ fm_identity_validate_active_binding() {  # <record> <meta> <task-id>
     && [ "$endpoint_session" = "$expected_endpoint_session" ] \
     && [ "$harness_session" = "$expected_harness_session" ] \
     && [ "$spawn_gen" = "$expected_spawn_gen" ]
+}
+
+fm_identity_validate_active_binding() {  # <record> <meta> <task-id>
+  local record=$1 meta=$2 id=$3
+  fm_identity_validate_meta_endpoint_ownership "$meta" "$id" || return 1
+  fm_identity_active_binding_fields_match "$record" "$meta" "$id"
 }
 
 fm_identity_selector_conflicts_with_other_record() {  # <selector> <resolved-task-id>
@@ -767,7 +844,7 @@ fm_identity_exact_task_record_routes() {  # <record> <meta> <task-id>
 }
 
 fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
-  local state=$1 raw=$2 id record callsign status current_count=0 retired_count=0 match_id= match_record=
+  local state=$1 raw=$2 id record callsign status current_count=0 retired_count=0 match_id="" match_record=""
   if ! fm_identity_task_id_valid "$raw"; then
     fm_identity_error "selector '$raw' is unsafe; use a callsign or exact task id from this Firstmate home"
     return 2

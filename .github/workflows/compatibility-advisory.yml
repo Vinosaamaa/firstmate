@@ -1,0 +1,208 @@
+name: Compatibility advisory
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: Broad portable compatibility (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install pinned ShellCheck
+        run: |
+          set -eu
+          bin/fm-install-shellcheck.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install pinned actionlint
+        run: |
+          set -eu
+          bin/fm-install-actionlint.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Require tmux for compatibility E2E tests
+        run: |
+          set -eu
+          command -v tmux >/dev/null || {
+            echo "::error::tmux is required for compatibility E2E tests"
+            exit 1
+          }
+          tmux -V
+      - name: Install tasks-axi for compatibility tests
+        run: |
+          set -eu
+          npm install -g tasks-axi
+          tasks-axi --version
+      - name: Run non-required portable tests
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          all_tests="$RUNNER_TEMP/fm-test/all-tests"
+          excluded_tests="$RUNNER_TEMP/fm-test/required-and-herdr-tests"
+          advisory_tests="$RUNNER_TEMP/fm-test/advisory-portable-tests"
+          bin/fm-test-run.sh --list --all | sort > "$all_tests"
+          {
+            printf '%s\n' \
+              tests/fm-backend-herdr.test.sh \
+              tests/fm-codex-session.test.sh \
+              tests/fm-control-relaunch.test.sh \
+              tests/fm-display-title.test.sh \
+              tests/fm-identity.test.sh \
+              tests/fm-secondmate-lifecycle-e2e.test.sh \
+              tests/fm-supervision-instructions.test.sh \
+              tests/fm-teardown-endpoint-safety.test.sh \
+              tests/fm-teardown.test.sh \
+              tests/fm-watch-recovery-loop.test.sh \
+              tests/fm-watcher-lock.test.sh \
+              tests/fm-workspace.test.sh
+            bin/fm-test-run.sh --list --family real-herdr-gated
+          } | sort -u > "$excluded_tests"
+          comm -23 "$all_tests" "$excluded_tests" > "$advisory_tests"
+          [ "$(wc -l < "$advisory_tests" | tr -d ' ')" -eq 155 ] || {
+            echo "::error::expected 155 non-required portable tests"
+            exit 1
+          }
+          mapfile -t selected_tests < "$advisory_tests"
+          bin/fm-test-run.sh "${selected_tests[@]}" \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-advisory-portable.json"
+      - name: Upload advisory portable timing artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-test-timing-advisory-portable
+          path: ${{ runner.temp }}/fm-test/fm-test-timing-advisory-portable.json
+          if-no-files-found: warn
+
+  herdr:
+    name: Broad Herdr compatibility (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Require tools for real Herdr
+        run: |
+          set -eu
+          command -v jq >/dev/null || { echo "::error::jq is required"; exit 1; }
+          command -v python3 >/dev/null || { echo "::error::python3 is required"; exit 1; }
+          command -v curl >/dev/null || { echo "::error::curl is required"; exit 1; }
+          command -v tar >/dev/null || { echo "::error::tar is required"; exit 1; }
+      - name: Install pinned Herdr and Treehouse
+        run: |
+          set -eu
+          bin/fm-install-herdr.sh "$RUNNER_TEMP/bin"
+          bin/fm-install-treehouse.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Assert Herdr pin and protocol floor
+        run: |
+          set -eu
+          status=$(herdr status --json)
+          printf '%s\n' "$status"
+          version=$(printf '%s' "$status" | jq -r '.client.version // empty')
+          protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty')
+          [ "$version" = "0.7.4" ] || {
+            echo "::error::expected exact Herdr pin 0.7.4, got ${version:-<empty>}"
+            exit 1
+          }
+          case "$protocol" in
+            ''|*[!0-9]*) echo "::error::could not read client protocol"; exit 1 ;;
+          esac
+          [ "$protocol" -ge 16 ] || {
+            echo "::error::herdr protocol $protocol is below the required floor 16"
+            exit 1
+          }
+      - name: Start default Herdr session
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-herdr"
+          nohup herdr server >"$RUNNER_TEMP/fm-herdr/default-server.log" 2>&1 &
+          attempt=0
+          while [ "$attempt" -lt 150 ]; do
+            running=$(herdr status --json 2>/dev/null | jq -r '.server.running // false' || echo false)
+            if [ "$running" = true ]; then
+              herdr session list --json | jq -e '
+                [.sessions[]? | select(.default == true and .name == "default" and .running == true)]
+                | length == 1
+              ' >/dev/null
+              exit 0
+            fi
+            sleep 0.2
+            attempt=$((attempt + 1))
+          done
+          echo "::error::default Herdr server did not become ready"
+          exit 1
+      - name: Snapshot pre-suite Herdr sessions
+        run: |
+          set -eu
+          bin/fm-herdr-ci-cleanup.sh snapshot "$RUNNER_TEMP/fm-herdr/sessions-before.json"
+      - name: Run non-required real-Herdr tests
+        timeout-minutes: 25
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/fm-test"
+          herdr_tests="$RUNNER_TEMP/fm-test/herdr-tests"
+          required_tests="$RUNNER_TEMP/fm-test/required-herdr-tests"
+          advisory_tests="$RUNNER_TEMP/fm-test/advisory-herdr-tests"
+          bin/fm-test-run.sh --list --family real-herdr-gated | sort > "$herdr_tests"
+          printf '%s\n' \
+            tests/fm-backend-herdr-presentation-e2e.test.sh \
+            tests/fm-control-herdr-smoke.test.sh \
+            tests/fm-herdr-session-cleanup-e2e.test.sh \
+            | sort > "$required_tests"
+          comm -23 "$herdr_tests" "$required_tests" > "$advisory_tests"
+          [ "$(wc -l < "$advisory_tests" | tr -d ' ')" -eq 9 ] || {
+            echo "::error::expected 9 non-required real-Herdr tests"
+            exit 1
+          }
+          mapfile -t selected_tests < "$advisory_tests"
+          bin/fm-test-run.sh "${selected_tests[@]}" \
+            --fail-on-gate-skip 'herdr not found' \
+            --json "$RUNNER_TEMP/fm-test/fm-test-timing-advisory-herdr.json"
+      - name: Cleanup job-owned Herdr lab sessions
+        if: always()
+        run: bin/fm-herdr-ci-cleanup.sh teardown "$RUNNER_TEMP/fm-herdr/sessions-before.json"
+      - name: Upload advisory Herdr timing and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-test-timing-advisory-herdr
+          path: |
+            ${{ runner.temp }}/fm-test/fm-test-timing-advisory-herdr.json
+            ${{ runner.temp }}/fm-herdr/sessions-before.json
+            ${{ runner.temp }}/fm-herdr/default-server.log
+          if-no-files-found: warn
+
+  macos-stock-bash:
+    name: Stock macOS Bash snapshot compatibility (advisory)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run snapshot consumers with stock Bash
+        shell: /bin/bash {0}
+        env:
+          PATH: /bin:/usr/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin
+        run: |
+          set -eu
+          case "$BASH_VERSION" in
+            3.2.57*) ;;
+            *) echo "::error::expected stock macOS Bash 3.2.57, got $BASH_VERSION"; exit 1 ;;
+          esac
+          command -v jq >/dev/null || { echo "::error::jq is required"; exit 1; }
+          shell_inventory="$RUNNER_TEMP/fm-shell-inventory"
+          bin/fm-lint.sh --list-files > "$shell_inventory"
+          parse_fail=0
+          while IFS= read -r f; do
+            /bin/bash -n "$f" || { echo "::error::stock macOS Bash 3.2 failed to parse $f"; parse_fail=1; }
+          done < "$shell_inventory"
+          [ "$parse_fail" -eq 0 ] || exit 1
+          /bin/bash tests/fm-fleet-snapshot-view.test.sh
+          /bin/bash tests/fm-bearings-snapshot.test.sh

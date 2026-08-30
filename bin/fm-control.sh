@@ -190,7 +190,33 @@ case "$RAW_ID" in
     fi
     ;;
 esac
-ID=$(fm_identity_resolve_selector "$STATE" "$RAW_ID") || exit 1
+EXACT_RESUME_RECOVERY=0
+if [ "$VERB" = relaunch ] && [ -f "$STATE/$RAW_ID.meta" ]; then
+  for control_raw_arg in "$@"; do
+    if [ "$control_raw_arg" = --resume ]; then
+      EXACT_RESUME_RECOVERY=1
+      break
+    fi
+  done
+fi
+if [ -f "$STATE/$RAW_ID.meta" ]; then
+  ID=$RAW_ID
+  CONTROL_LOCK="$STATE/.control-$ID.lock"
+  trap control_cleanup EXIT
+  fm_lock_try_acquire "$CONTROL_LOCK" \
+    || die "another lifecycle action is already running for task $ID"
+  CONTROL_LOCK_HELD=1
+fi
+if [ "$EXACT_RESUME_RECOVERY" = 1 ]; then
+  # A crash after replacement metadata publication can temporarily leave the
+  # exact task record ahead of its persistent identity binding. The locked
+  # resume reconciler below is the single path allowed to restore that proven
+  # pre-launch state; callsign selectors and every other verb still require a
+  # valid current binding before they can resolve.
+  ID=$RAW_ID
+else
+  ID=$(fm_identity_resolve_selector "$STATE" "$RAW_ID") || exit 1
+fi
 CALLSIGN=$(fm_identity_display_callsign "$ID")
 
 if ! fm_control_verb_allowed "$VERB"; then
@@ -216,47 +242,50 @@ NOTE=
 NOTE_SET=0
 RESUMABLE_EXIT=0
 RESUME_RELAUNCH=0
-want_value=
-for a in "$@"; do
-  if [ -n "$want_value" ]; then
-    case "$a" in
-      --*) die "--$want_value requires a value" ;;
+control_want_value=
+for control_arg in "$@"; do
+  if [ -n "$control_want_value" ]; then
+    case "$control_arg" in
+      --*) die "--$control_want_value requires a value" ;;
     esac
-    case "$want_value" in
-      harness) NEW_HARNESS=$a; HARNESS_SET=1 ;;
-      model) NEW_MODEL=$a; MODEL_SET=1 ;;
-      effort) NEW_EFFORT=$a; EFFORT_SET=1 ;;
-      note) NOTE=$a; NOTE_SET=1 ;;
-      note-file)
-        [ -f "$a" ] || die "--note-file '$a' is not a readable file"
-        NOTE=$(cat "$a")
+    case "$control_want_value" in
+      harness) NEW_HARNESS=$control_arg; HARNESS_SET=1 ;;
+      model) NEW_MODEL=$control_arg; MODEL_SET=1 ;;
+      effort) NEW_EFFORT=$control_arg; EFFORT_SET=1 ;;
+      note) NOTE=$control_arg; NOTE_SET=1 ;;
+      note_file)
+        [ -f "$control_arg" ] || die "--note-file '$control_arg' is not a readable file"
+        NOTE=$(cat "$control_arg")
         NOTE_SET=1
         ;;
     esac
-    want_value=
+    control_want_value=
     continue
   fi
-  case "$a" in
-    --harness) want_value=harness ;;
-    --harness=*) NEW_HARNESS=${a#--harness=}; HARNESS_SET=1 ;;
-    --model) want_value=model ;;
-    --model=*) NEW_MODEL=${a#--model=}; MODEL_SET=1 ;;
-    --effort) want_value=effort ;;
-    --effort=*) NEW_EFFORT=${a#--effort=}; EFFORT_SET=1 ;;
-    --note) want_value=note ;;
-    --note=*) NOTE=${a#--note=}; NOTE_SET=1 ;;
-    --note-file) want_value=note-file ;;
+  case "$control_arg" in
+    --harness) control_want_value=harness ;;
+    --harness=*) NEW_HARNESS=${control_arg#--harness=}; HARNESS_SET=1 ;;
+    --model) control_want_value=model ;;
+    --model=*) NEW_MODEL=${control_arg#--model=}; MODEL_SET=1 ;;
+    --effort) control_want_value=effort ;;
+    --effort=*) NEW_EFFORT=${control_arg#--effort=}; EFFORT_SET=1 ;;
+    --note) control_want_value=note ;;
+    --note=*) NOTE=${control_arg#--note=}; NOTE_SET=1 ;;
+    --note-file) control_want_value=note_file ;;
     --note-file=*)
-      [ -f "${a#--note-file=}" ] || die "--note-file '${a#--note-file=}' is not a readable file"
-      NOTE=$(cat "${a#--note-file=}")
+      [ -f "${control_arg#--note-file=}" ] || die "--note-file '${control_arg#--note-file=}' is not a readable file"
+      NOTE=$(cat "${control_arg#--note-file=}")
       NOTE_SET=1
       ;;
     --resumable) RESUMABLE_EXIT=1 ;;
     --resume) RESUME_RELAUNCH=1 ;;
-    *) die "unexpected argument '$a'" ;;
+    *) die "unexpected argument '$control_arg'" ;;
   esac
 done
-[ -z "$want_value" ] || die "--$want_value requires a value"
+if [ -n "$control_want_value" ]; then
+  [ "$control_want_value" = note_file ] && die "--note-file requires a value"
+  die "--$control_want_value requires a value"
+fi
 
 if [ "$VERB" != relaunch ]; then
   [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
@@ -294,9 +323,11 @@ fi
 fm_lease_guard "$ID" "lifecycle control (fm-control)"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
 trap control_cleanup EXIT
-fm_lock_try_acquire "$CONTROL_LOCK" \
-  || die "another lifecycle action is already running for task $ID"
-CONTROL_LOCK_HELD=1
+if [ "$CONTROL_LOCK_HELD" != 1 ]; then
+  fm_lock_try_acquire "$CONTROL_LOCK" \
+    || die "another lifecycle action is already running for task $ID"
+  CONTROL_LOCK_HELD=1
+fi
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ]; then
   die "no active task for $CALLSIGN ($ID) in $STATE"
@@ -568,8 +599,9 @@ do_resumable_codex_exit() {
     status=$?
   fi
   rm -f "$before" "$after"
-  [ "$status" -eq 0 ] && fm_codex_session_uuid_valid "$session" \
-    || die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  if [ "$status" -ne 0 ] || ! fm_codex_session_uuid_valid "$session"; then
+    die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  fi
   fm_codex_session_publish "$STATE" "$ID" "$META" "$session" parked \
     || die "task $ID stopped, but its exact Codex session $session could not be claimed without conflicting with another task or binding; no resumable binding was published"
   printf '%s session=%s' "$result" "$session"
@@ -913,7 +945,7 @@ record_note() {
 # launch bytes may have been sent, or the endpoint is not positively dead, the
 # binding becomes uncertain and no caller may speculate by launching it again.
 codex_resume_reconcile_prior_attempt() {
-  local session= binding_meta= attempt="$JOURNAL.resume-attempt" attempt_phase state
+  local session="" binding_meta="" attempt="$JOURNAL.resume-attempt" attempt_phase state
   if session=$(fm_codex_session_validate "$STATE" "$ID" "$META" resuming 2>/dev/null); then
     binding_meta=$META
   elif [ -f "$META_PRIOR" ] \
@@ -950,7 +982,7 @@ codex_resume_reconcile_prior_attempt() {
 }
 
 do_relaunch() {
-  local exit_result state note_line attempt_phase current_tx
+  local exit_result state note_line attempt_phase current_tx resolved_id
   local -a spawn_args
 
   require_state_verified_backend relaunch
@@ -961,6 +993,10 @@ do_relaunch() {
     [ "$TARGET_HARNESS" = codex ] \
       || die "--resume cannot switch task $ID away from Codex; exact-session resume requires both the recorded and target harness to be codex"
     codex_resume_reconcile_prior_attempt
+    resolved_id=$(fm_identity_resolve_selector "$STATE" "$ID") \
+      || die "task $ID's safely recovered Codex resume metadata still conflicts with its persistent identity"
+    [ "$resolved_id" = "$ID" ] \
+      || die "task $ID's safely recovered Codex resume metadata resolved to another task"
   fi
 
   case "$KIND" in

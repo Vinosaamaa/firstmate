@@ -504,9 +504,10 @@ test_record_bound_to_another_task_is_refused() {
   mv "$dir/home/state/t1.meta.tmp" "$dir/home/state/t1.meta"
   out=$(run_control "$dir" t1 exit); rc=$?
   expect_code 1 "$rc" "a record bound to another task should refuse"
-  assert_contains "$out" "belongs to task other" "the refusal should name the conflicting binding"
+  assert_contains "$out" "could not publish the exact identity binding for task t1" \
+    "persistent identity should refuse the conflicting binding before control delivery"
   [ -z "$(literals "$dir")" ] || fail "a foreign record must receive no bytes"
-  pass "fm-control: a record whose endpoint identity names another task is refused"
+  pass "fm-control: persistent identity refuses a record whose endpoint names another task"
 }
 
 # A remotely placed secondmate's agent runs on another host, so none of the

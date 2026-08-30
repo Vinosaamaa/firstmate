@@ -54,7 +54,10 @@ make_fake_root() {
   # fm-backend.sh unconditionally, and dispatches the kill call through the
   # tmux adapter; both are unchanged by this suite's fixture, just newly
   # required siblings since the P1 backend extraction).
-  ln -s "$ROOT/bin/fm-backend.sh" "$fake/bin/fm-backend.sh"
+  cat > "$fake/bin/fm-backend.sh" <<SH
+. "$ROOT/bin/fm-backend.sh"
+fm_backend_kill() { return 0; }
+SH
   ln -s "$ROOT/bin/backends/tmux.sh" "$fake/bin/backends/tmux.sh"
   ln -s "$ROOT/bin/fm-tmux-lib.sh" "$fake/bin/fm-tmux-lib.sh"
   ln -s "$ROOT/bin/fm-cursor-lib.sh" "$fake/bin/fm-cursor-lib.sh"
@@ -89,6 +92,8 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-pending-reply-lib.sh" "$fake/bin/fm-pending-reply-lib.sh"
   ln -s "$ROOT/bin/fm-marker-lib.sh" "$fake/bin/fm-marker-lib.sh"
   ln -s "$ROOT/bin/fm-operational-input.sh" "$fake/bin/fm-operational-input.sh"
+  ln -s "$ROOT/bin/fm-identity-lib.sh" "$fake/bin/fm-identity-lib.sh"
+  ln -s "$ROOT/bin/fm-codex-session-lib.sh" "$fake/bin/fm-codex-session-lib.sh"
   # fm-guard.sh: stub (teardown calls it with `|| true`).
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -108,7 +113,8 @@ fm_tasks_axi_backend_available() { return 1; }
 SH
   # Meta with a nonexistent worktree so the dirty/treehouse blocks skip.
   cat > "$fake/state/$id.meta" <<META
-window=fakeses:fm-$id
+window=firstmate:fm-$id
+endpoint_task_id=$id
 worktree=$TMP_ROOT/nonexistent-worktree-$id
 project=$TMP_ROOT/nonexistent-project-$id
 harness=claude
@@ -124,6 +130,7 @@ META
 
 test_teardown_removes_tasktmp_dir() {
   local id=td-rm-z2
+  local out status
   local task_tmp="$TMP_ROOT/fm-$id"
   mkdir -p "$task_tmp/gotmp"
   printf 'leftover\n' > "$task_tmp/gotmp/build-artifact"
@@ -132,10 +139,10 @@ test_teardown_removes_tasktmp_dir() {
   # Sanity: dir + contents exist before teardown.
   [ -d "$task_tmp/gotmp" ] || fail "precondition: gotmp missing before teardown"
   # Run the REAL teardown against the fake root.
-  FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" >/dev/null 2>&1 \
-    || fail "teardown exited non-zero with a valid tasktmp"
+  out=$(FM_HOME="$fake" bash "$fake/bin/fm-teardown.sh" "$id" 2>&1); status=$?
+  [ "$status" -eq 0 ] || fail "teardown exited non-zero with a valid tasktmp: $out"
   [ ! -e "$task_tmp" ] \
-    || fail "teardown did not remove the tasktmp dir ($task_tmp still exists)"
+    || fail "teardown did not remove the tasktmp dir ($task_tmp still exists): $out"
   pass "fm-teardown removes the dir pointed to by tasktmp= in meta"
 }
 
@@ -146,7 +153,10 @@ test_teardown_skips_gracefully_without_tasktmp() {
   local fake="$TMP_ROOT/$id-root"
   mkdir -p "$fake/bin/backends" "$fake/state"
   ln -s "$TEARDOWN" "$fake/bin/fm-teardown.sh"
-  ln -s "$ROOT/bin/fm-backend.sh" "$fake/bin/fm-backend.sh"
+  cat > "$fake/bin/fm-backend.sh" <<SH
+. "$ROOT/bin/fm-backend.sh"
+fm_backend_kill() { return 0; }
+SH
   ln -s "$ROOT/bin/backends/tmux.sh" "$fake/bin/backends/tmux.sh"
   ln -s "$ROOT/bin/fm-tmux-lib.sh" "$fake/bin/fm-tmux-lib.sh"
   ln -s "$ROOT/bin/fm-cursor-lib.sh" "$fake/bin/fm-cursor-lib.sh"
@@ -176,6 +186,8 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-pending-reply-lib.sh" "$fake/bin/fm-pending-reply-lib.sh"
   ln -s "$ROOT/bin/fm-marker-lib.sh" "$fake/bin/fm-marker-lib.sh"
   ln -s "$ROOT/bin/fm-operational-input.sh" "$fake/bin/fm-operational-input.sh"
+  ln -s "$ROOT/bin/fm-identity-lib.sh" "$fake/bin/fm-identity-lib.sh"
+  ln -s "$ROOT/bin/fm-codex-session-lib.sh" "$fake/bin/fm-codex-session-lib.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -191,7 +203,8 @@ fm_tasks_axi_backend_available() { return 1; }
 SH
   # No tasktmp= line at all.
   cat > "$fake/state/$id.meta" <<META
-window=fakeses:fm-$id
+window=firstmate:fm-$id
+endpoint_task_id=$id
 worktree=$TMP_ROOT/nonexistent-wt-$id
 project=$TMP_ROOT/nonexistent-proj-$id
 harness=claude

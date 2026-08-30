@@ -553,6 +553,7 @@ CODEX_SESSION_ID=01a02b1e-c95e-7a92-9e37-b0862d93e5e0
 
 publish_codex_binding() {  # <case-dir> [state]
   local case_dir=$1 lifecycle=${2:-parked}
+  # shellcheck disable=SC2016 # The nested shell expands its own positional parameters.
   env FM_HOME="$case_dir" FM_STATE_OVERRIDE="$case_dir/state" \
     bash -c '. "$1"; . "$2"; fm_codex_session_publish "$3" task-x1 "$4" "$5" "$6"' \
       _ "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-codex-session-lib.sh" \
@@ -634,7 +635,12 @@ test_local_only_fork_remote_allows() {
 
   expect_code 0 "$rc" "fork-allow: teardown should succeed when HEAD is on a fork remote"
   ! grep -q REFUSED "$case_dir/stderr" || fail "fork-allow: teardown printed a REFUSED line"
-  pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
+  jq -e --arg id task-x1 '
+    .schema == "fm-secondmate-home-summary.v1"
+    and all(.endpoints[]; .id != $id)
+  ' "$case_dir/state/home-summary.json" >/dev/null \
+    || fail "successful task teardown did not publish the task's removal from the home summary ledger"
+  pass "local-only worktree with HEAD on a fork remote is torn down and the home summary is refreshed"
 }
 
 test_teardown_prompts_tasks_axi_done_when_compatible() {

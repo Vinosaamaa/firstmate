@@ -103,7 +103,7 @@ run_control() {
 
 OUT=$(run_control hsmoke exit) || fail "exit against an agent-free herdr pane should be idempotent success: $OUT"
 case "$OUT" in
-  "already-stopped hsmoke"*) : ;;
+  "already-stopped "*" (hsmoke) "*) : ;;
   *) fail "an agent-free herdr pane should report already-stopped, got: $OUT" ;;
 esac
 pass "real herdr: exit on a pane with no registered agent is idempotent success"
@@ -128,7 +128,7 @@ STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
 
 OUT=$(run_control hsmoke interrupt) || fail "interrupt against a registered agent should succeed: $OUT"
 case "$OUT" in
-  *"interrupt-delivered hsmoke harness=claude backend=herdr verified=agent-alive cancel=unconfirmed"*) : ;;
+  *"interrupt-delivered "*" (hsmoke) harness=claude backend=herdr verified=agent-alive cancel=unconfirmed"*) : ;;
   *) fail "interrupt should report the agent-alive proof on herdr, got: $OUT" ;;
 esac
 pass "real herdr: interrupt delivers the harness's key and proves the agent survived it"
@@ -179,13 +179,53 @@ sleep 30
 SH
 chmod +x "$SCRATCH/fakebin/codex"
 
-herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
-  --agent fm-control-smoke-agent --session "$SESSION" >/dev/null 2>&1 \
-  || fail "could not release the synthetic agent before the Codex resume case"
-sed 's/^harness=claude$/harness=codex/' "$HOME_DIR/state/hsmoke.meta" \
+CONTROL_AGENT_STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
+case "$CONTROL_AGENT_STATE" in
+  alive)
+    herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
+      --agent fm-control-smoke-agent --seq 1 --session "$SESSION" >/dev/null 2>&1 \
+      || fail "could not release the surviving synthetic agent before the Codex resume case"
+    ;;
+  dead) ;;
+  missing)
+    # The intentionally mistargeted /exit above can eventually terminate the
+    # plain shell after the control plane has already failed closed. Recreate
+    # this isolated fixture endpoint before starting the independent resume
+    # case instead of assuming that delayed shell exit preserved the pane.
+    CONTAINER_RAW=$(fm_backend_herdr_container_ensure "$WT") \
+      || fail "could not re-ensure the isolated Herdr container after the synthetic pane exited"
+    CONTAINER=${CONTAINER_RAW%%$'\t'*}
+    SEEDED_TAB_ID=${CONTAINER_RAW#*$'\t'}
+    WORKSPACE_ID=${CONTAINER#*:}
+    TASK_IDS=$(fm_backend_herdr_create_task "$CONTAINER" "fm-hsmoke" "$WT" "$SEEDED_TAB_ID") \
+      || fail "could not recreate the isolated Herdr task pane for the Codex resume case"
+    read -r TAB_ID PANE_ID <<EOF
+$TASK_IDS
+EOF
+    [ -n "$TAB_ID" ] && [ -n "$PANE_ID" ] \
+      || fail "recreated Herdr task did not return complete tab/pane ids"
+    ;;
+  *) fail "synthetic Herdr endpoint became unreadable before the Codex resume case" ;;
+esac
+sed -e 's/^harness=claude$/harness=codex/' \
+  -e "s#^window=.*#window=$SESSION:$PANE_ID#" \
+  -e "s#^herdr_workspace_id=.*#herdr_workspace_id=$WORKSPACE_ID#" \
+  -e "s#^herdr_tab_id=.*#herdr_tab_id=$TAB_ID#" \
+  -e "s#^herdr_pane_id=.*#herdr_pane_id=$PANE_ID#" \
+  "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"
 printf 'spawn_gen=herdr-initial\n' >> "$HOME_DIR/state/hsmoke.meta.tmp"
 mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
+
+# The setup above deliberately advances the task's endpoint/harness lifecycle
+# metadata. Keep its persistent callsign binding on that exact same incarnation,
+# as the real relaunch/resume continuation does before routing by task id.
+RESUME_CALLSIGN=$(
+  export FM_HOME="$HOME_DIR"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-identity-lib.sh"
+  fm_identity_ensure_task_from_meta "$HOME_DIR/state/hsmoke.meta" hsmoke rebind
+) || fail "could not rebind the persistent callsign to the Codex resume fixture"
 
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-wake-lib.sh"
@@ -211,7 +251,7 @@ fm_backend_herdr_send_text_line "$SESSION:$PANE_ID" \
 OUT=$(run_control hsmoke relaunch --resume --note "continue after isolated Herdr restart") \
   || fail "exact Codex resume in the recorded Herdr endpoint should succeed: $OUT"
 case "$OUT" in
-  *"resumed hsmoke session=$CODEX_SESSION_ID"*"backend=herdr endpoint=$SESSION:$PANE_ID"*) : ;;
+  *"resumed $RESUME_CALLSIGN (hsmoke) session=$CODEX_SESSION_ID"*"backend=herdr endpoint=$SESSION:$PANE_ID"*) : ;;
   *) fail "Herdr exact resume should report its session and exact endpoint, got: $OUT" ;;
 esac
 grep -F 'resume ' "$FAKE_CODEX_LOG" >/dev/null \
