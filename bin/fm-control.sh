@@ -216,47 +216,50 @@ NOTE=
 NOTE_SET=0
 RESUMABLE_EXIT=0
 RESUME_RELAUNCH=0
-want_value=
-for a in "$@"; do
-  if [ -n "$want_value" ]; then
-    case "$a" in
-      --*) die "--$want_value requires a value" ;;
+control_want_value=
+for control_arg in "$@"; do
+  if [ -n "$control_want_value" ]; then
+    case "$control_arg" in
+      --*) die "--$control_want_value requires a value" ;;
     esac
-    case "$want_value" in
-      harness) NEW_HARNESS=$a; HARNESS_SET=1 ;;
-      model) NEW_MODEL=$a; MODEL_SET=1 ;;
-      effort) NEW_EFFORT=$a; EFFORT_SET=1 ;;
-      note) NOTE=$a; NOTE_SET=1 ;;
-      note-file)
-        [ -f "$a" ] || die "--note-file '$a' is not a readable file"
-        NOTE=$(cat "$a")
+    case "$control_want_value" in
+      harness) NEW_HARNESS=$control_arg; HARNESS_SET=1 ;;
+      model) NEW_MODEL=$control_arg; MODEL_SET=1 ;;
+      effort) NEW_EFFORT=$control_arg; EFFORT_SET=1 ;;
+      note) NOTE=$control_arg; NOTE_SET=1 ;;
+      note_file)
+        [ -f "$control_arg" ] || die "--note-file '$control_arg' is not a readable file"
+        NOTE=$(cat "$control_arg")
         NOTE_SET=1
         ;;
     esac
-    want_value=
+    control_want_value=
     continue
   fi
-  case "$a" in
-    --harness) want_value=harness ;;
-    --harness=*) NEW_HARNESS=${a#--harness=}; HARNESS_SET=1 ;;
-    --model) want_value=model ;;
-    --model=*) NEW_MODEL=${a#--model=}; MODEL_SET=1 ;;
-    --effort) want_value=effort ;;
-    --effort=*) NEW_EFFORT=${a#--effort=}; EFFORT_SET=1 ;;
-    --note) want_value=note ;;
-    --note=*) NOTE=${a#--note=}; NOTE_SET=1 ;;
-    --note-file) want_value=note-file ;;
+  case "$control_arg" in
+    --harness) control_want_value=harness ;;
+    --harness=*) NEW_HARNESS=${control_arg#--harness=}; HARNESS_SET=1 ;;
+    --model) control_want_value=model ;;
+    --model=*) NEW_MODEL=${control_arg#--model=}; MODEL_SET=1 ;;
+    --effort) control_want_value=effort ;;
+    --effort=*) NEW_EFFORT=${control_arg#--effort=}; EFFORT_SET=1 ;;
+    --note) control_want_value=note ;;
+    --note=*) NOTE=${control_arg#--note=}; NOTE_SET=1 ;;
+    --note-file) control_want_value=note_file ;;
     --note-file=*)
-      [ -f "${a#--note-file=}" ] || die "--note-file '${a#--note-file=}' is not a readable file"
-      NOTE=$(cat "${a#--note-file=}")
+      [ -f "${control_arg#--note-file=}" ] || die "--note-file '${control_arg#--note-file=}' is not a readable file"
+      NOTE=$(cat "${control_arg#--note-file=}")
       NOTE_SET=1
       ;;
     --resumable) RESUMABLE_EXIT=1 ;;
     --resume) RESUME_RELAUNCH=1 ;;
-    *) die "unexpected argument '$a'" ;;
+    *) die "unexpected argument '$control_arg'" ;;
   esac
 done
-[ -z "$want_value" ] || die "--$want_value requires a value"
+if [ -n "$control_want_value" ]; then
+  [ "$control_want_value" = note_file ] && die "--note-file requires a value"
+  die "--$control_want_value requires a value"
+fi
 
 if [ "$VERB" != relaunch ]; then
   [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
@@ -568,8 +571,9 @@ do_resumable_codex_exit() {
     status=$?
   fi
   rm -f "$before" "$after"
-  [ "$status" -eq 0 ] && fm_codex_session_uuid_valid "$session" \
-    || die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  if [ "$status" -ne 0 ] || ! fm_codex_session_uuid_valid "$session"; then
+    die "task $ID stopped, but Codex did not add exactly one authoritative canonical session-id banner; no resumable binding was published"
+  fi
   fm_codex_session_publish "$STATE" "$ID" "$META" "$session" parked \
     || die "task $ID stopped, but its exact Codex session $session could not be claimed without conflicting with another task or binding; no resumable binding was published"
   printf '%s session=%s' "$result" "$session"
@@ -913,7 +917,7 @@ record_note() {
 # launch bytes may have been sent, or the endpoint is not positively dead, the
 # binding becomes uncertain and no caller may speculate by launching it again.
 codex_resume_reconcile_prior_attempt() {
-  local session= binding_meta= attempt="$JOURNAL.resume-attempt" attempt_phase state
+  local session="" binding_meta="" attempt="$JOURNAL.resume-attempt" attempt_phase state
   if session=$(fm_codex_session_validate "$STATE" "$ID" "$META" resuming 2>/dev/null); then
     binding_meta=$META
   elif [ -f "$META_PRIOR" ] \

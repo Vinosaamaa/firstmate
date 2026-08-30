@@ -62,7 +62,7 @@ fm_identity_home_path() {
 }
 
 fm_identity_fold() {
-  local value=$1 folded= char i LC_ALL=C
+  local value=$1 folded="" char i LC_ALL=C
   for ((i = 0; i < ${#value}; i++)); do
     char=${value:i:1}
     case "$char" in
@@ -91,7 +91,7 @@ fm_identity_name_valid() {  # <name>
     [A-Za-z]* ) ;;
     *) return 1 ;;
   esac
-  case "$name" in *[!A-Za-z0-9-]*|*-|*--) return 1 ;; esac
+  case "$name" in *[!A-Za-z0-9-]*|*--|*-) return 1 ;; esac
 }
 
 fm_identity_task_id_valid() {  # <task-id>
@@ -122,7 +122,7 @@ fm_identity_validate_name() {  # <name>
 }
 
 fm_identity_record_value() {  # <record> <key>
-  local record=$1 key=$2 count=0 value= line
+  local record=$1 key=$2 count=0 value="" line
   [ -f "$record" ] && [ ! -L "$record" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
@@ -438,7 +438,7 @@ fm_identity_validate_meta_endpoint_ownership() {  # <meta> <task-id>
 
 fm_identity_write_task_record() {  # <record> <id> <callsign> <status> <meta|empty> <created> [retired-file]
   local record=$1 id=$2 callsign=$3 status=$4 meta=$5 created=$6 retired_file=${7:-}
-  local home worktree= backend= endpoint= endpoint_session= harness_session= spawn_gen= value tmp
+  local home worktree="" backend="" endpoint="" endpoint_session="" harness_session="" spawn_gen="" value tmp
   fm_identity_task_id_valid "$id" && fm_identity_validate_name "$callsign" >/dev/null 2>&1 || return 1
   home=$(fm_identity_home_path) || return 1
   if [ -n "$meta" ]; then
@@ -767,7 +767,7 @@ fm_identity_exact_task_record_routes() {  # <record> <meta> <task-id>
 }
 
 fm_identity_resolve_selector() {  # <state-dir> <task-id-or-callsign>
-  local state=$1 raw=$2 id record callsign status current_count=0 retired_count=0 match_id= match_record=
+  local state=$1 raw=$2 id record callsign status current_count=0 retired_count=0 match_id="" match_record=""
   if ! fm_identity_task_id_valid "$raw"; then
     fm_identity_error "selector '$raw' is unsafe; use a callsign or exact task id from this Firstmate home"
     return 2
