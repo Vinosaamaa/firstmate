@@ -179,12 +179,40 @@ sleep 30
 SH
 chmod +x "$SCRATCH/fakebin/codex"
 
-if ! RELEASE_OUT=$(herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
-  --agent fm-control-smoke-agent --seq 1 --session "$SESSION" 2>&1); then
-  RELEASE_STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
-  fail "could not release the synthetic agent before the Codex resume case (state=$RELEASE_STATE): $RELEASE_OUT"
-fi
-sed 's/^harness=claude$/harness=codex/' "$HOME_DIR/state/hsmoke.meta" \
+CONTROL_AGENT_STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
+case "$CONTROL_AGENT_STATE" in
+  alive)
+    herdr pane release-agent "$PANE_ID" --source fm-control-smoke \
+      --agent fm-control-smoke-agent --seq 1 --session "$SESSION" >/dev/null 2>&1 \
+      || fail "could not release the surviving synthetic agent before the Codex resume case"
+    ;;
+  dead) ;;
+  missing)
+    # The intentionally mistargeted /exit above can eventually terminate the
+    # plain shell after the control plane has already failed closed. Recreate
+    # this isolated fixture endpoint before starting the independent resume
+    # case instead of assuming that delayed shell exit preserved the pane.
+    CONTAINER_RAW=$(fm_backend_herdr_container_ensure "$WT") \
+      || fail "could not re-ensure the isolated Herdr container after the synthetic pane exited"
+    CONTAINER=${CONTAINER_RAW%%$'\t'*}
+    SEEDED_TAB_ID=${CONTAINER_RAW#*$'\t'}
+    WORKSPACE_ID=${CONTAINER#*:}
+    TASK_IDS=$(fm_backend_herdr_create_task "$CONTAINER" "fm-hsmoke" "$WT" "$SEEDED_TAB_ID") \
+      || fail "could not recreate the isolated Herdr task pane for the Codex resume case"
+    read -r TAB_ID PANE_ID <<EOF
+$TASK_IDS
+EOF
+    [ -n "$TAB_ID" ] && [ -n "$PANE_ID" ] \
+      || fail "recreated Herdr task did not return complete tab/pane ids"
+    ;;
+  *) fail "synthetic Herdr endpoint became unreadable before the Codex resume case" ;;
+esac
+sed -e 's/^harness=claude$/harness=codex/' \
+  -e "s#^window=.*#window=$SESSION:$PANE_ID#" \
+  -e "s#^herdr_workspace_id=.*#herdr_workspace_id=$WORKSPACE_ID#" \
+  -e "s#^herdr_tab_id=.*#herdr_tab_id=$TAB_ID#" \
+  -e "s#^herdr_pane_id=.*#herdr_pane_id=$PANE_ID#" \
+  "$HOME_DIR/state/hsmoke.meta" \
   > "$HOME_DIR/state/hsmoke.meta.tmp"
 printf 'spawn_gen=herdr-initial\n' >> "$HOME_DIR/state/hsmoke.meta.tmp"
 mv "$HOME_DIR/state/hsmoke.meta.tmp" "$HOME_DIR/state/hsmoke.meta"
